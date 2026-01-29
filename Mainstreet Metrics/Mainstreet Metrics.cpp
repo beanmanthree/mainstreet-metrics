@@ -3,9 +3,11 @@
 
 #include <iostream>
 
+#include "Ansi.hpp"
+
 int main()
 {
-    std::cout << "Hello World!\n";
+    std::cout << Ansi::Blink << "Hello World!\n" << Ansi::Reset;
 }
 
 // Run program: Ctrl + F5 or Debug > Start Without Debugging menu
