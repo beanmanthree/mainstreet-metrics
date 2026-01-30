@@ -1,22 +1,12 @@
-// Mainstreet Metrics.cpp : This file contains the 'main' function. Program execution begins and ends there.
-//
-
 #include <iostream>
 
-#include "Ansi.hpp"
+#include "Table.hpp"
 
-int main()
-{
-    std::cout << Ansi::Blink << "Hello World!\n" << Ansi::Reset;
+int main() {
+
+    Table businessInfo({ "Category", "Name", "Short Description", "Rating", "Distance" }, { 10, 16, 32, 6, 8 }, '-', '|', std::vector<std::string>(5, static_cast<std::string>(Ansi::Inverse)));
+    businessInfo.addRow({ "Food", "Chipotle", "Tasty mexican food.", "9.3", "1.2km" });
+    businessInfo.print();
+    return 0;
+
 }
-
-// Run program: Ctrl + F5 or Debug > Start Without Debugging menu
-// Debug program: F5 or Debug > Start Debugging menu
-
-// Tips for Getting Started: 
-//   1. Use the Solution Explorer window to add/manage files
-//   2. Use the Team Explorer window to connect to source control
-//   3. Use the Output window to see build output and other messages
-//   4. Use the Error List window to view errors
-//   5. Go to Project > Add New Item to create new code files, or Project > Add Existing Item to add existing code files to the project
-//   6. In the future, to open this project again, go to File > Open > Project and select the .sln file
