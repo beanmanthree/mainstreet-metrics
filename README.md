@@ -17,3 +17,7 @@ UI Layer (Menus, Tables, ANSI)
 Application Logic (Validation, Distance, Sorting, Export)
 BusinessManager API (Users, Businesses, Reviews, Bookmarks)
 MongoDB Backend
+
+#Libraries used:
+Open Source C++ standard library.
+User-defined headers.
