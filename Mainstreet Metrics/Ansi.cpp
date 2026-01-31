@@ -1,7 +1,6 @@
 #include "ansi.hpp"
 
 namespace Ansi {
-
 	std::string fg(Color c) {
 		return std::string(CSI) + std::to_string(static_cast<int>(c)) + 'm';
 	}
@@ -53,5 +52,4 @@ namespace Ansi {
 	std::string restoreCursor() {
 		return std::string(CSI) + 'u';
 	}
-
 }

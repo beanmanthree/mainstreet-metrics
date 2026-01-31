@@ -14,7 +14,6 @@
 * A string to represent the style.
 ***/
 struct Highlight {
-
 	// Top left corner
 	size_t x0, y0;
 
@@ -30,7 +29,6 @@ struct Highlight {
 		x1(bottomRightX),
 		y1(bottomRightY),
 		style(style) {}
-
 };
 
 /***
@@ -38,7 +36,6 @@ struct Highlight {
 * Parameters: Contains text inside the style and the styling of the cell.
 ***/
 struct TableCell {
-	
 	// Text inside the cell
 	std::string value;
 
@@ -46,13 +43,10 @@ struct TableCell {
 	std::string style;
 
 	TableCell(std::string value, std::string style = "") : value(value), style(style) {}
-
 };
 
 class Table {
-
 private:
-
 	size_t width;
 	std::vector<TableCell> header;
 	std::vector<size_t> columnWidths;
@@ -66,7 +60,6 @@ private:
 	* Result: The merged vector of TableCells.
 	***/
 	std::vector<TableCell> createRow(const std::vector<std::string>& rowData, const std::vector<std::string>& rowStyling) {
-		
 		// Create and fill table cells
 		std::vector<TableCell> row;
 		
@@ -79,11 +72,9 @@ private:
 		}
 
 		return row;
-
 	}
 
 public:
-
 	Table(
 		const std::vector<std::string>& headerTitles,
 		const std::vector<size_t>& columnWidths,
@@ -95,7 +86,6 @@ public:
 		columnWidths(columnWidths),
 		rowSeparator(rowSeparator),
 		columnSeparator(columnSeparator) {
-
 		size_t width = headerTitles.size();
 
 		// Make sure that widths all match
@@ -104,7 +94,6 @@ public:
 
 		// Initialize header
 		header = createRow(headerTitles, styling);
-
 	}
 
 	/***
@@ -113,14 +102,12 @@ public:
 	* Result: None, prints the formatted table to the console.
 	***/
 	void print(const std::vector<Highlight>& highlights = std::vector<Highlight>()) {
-
 		/***
 		* Purpose: Formats the text in the cells by truncating or padding.
 		* Parameters: The text in the cell and the desired width.
 		* Result: The formatted string.
 		***/
 		auto formatText = [](const std::string& text, size_t width) -> std::string {
-			
 			// To truncate
 			if (text.length() > width) {
 
@@ -141,7 +128,6 @@ public:
 		* Result: The styles located inside that coordinate.
 		***/
 		auto getStyle = [&highlights](size_t x, size_t y) -> std::string {
-
 			std::string res = "";
 			for (const Highlight& h : highlights) {
 				
@@ -149,7 +135,6 @@ public:
 				if (x >= h.x0 && x < h.x1 && y >= h.y0 && y < h.y1) res += h.style;
 			}
 			return res;
-
 		};
 
 		// Row bar that separates rows
@@ -171,7 +156,6 @@ public:
 			std::cout << columnSeparator << '\n';
 			std::cout << Ansi::Reset << rowBar << '\n';
 		}
-
 	}
 
 	/***
@@ -180,13 +164,11 @@ public:
 	* Result: None, affects member variables.
 	***/
 	void addRow(const std::vector<std::string>& rowData, const std::vector<std::string>& rowStyling = std::vector<std::string>()) {
-
 		// Make sure that widths all match
 		if (rowData.size() != width) throw std::invalid_argument("Row data size must match column count.");
 		if (!rowStyling.empty() && rowStyling.size() != width) throw std::invalid_argument("Row data size must match row style size");
 
 		rows.push_back(createRow(rowData, rowStyling));
-
 	}
 
 };
