@@ -9,6 +9,7 @@
 #include <fstream>
 #include <sstream>
 #include <cmath>
+#include <cstdlib> // Environment variables
 
 #include "BusinessManager.hpp"
 #include "Table.hpp"
@@ -16,7 +17,6 @@
 #include "ansi.hpp"
 
 // Database connection configuration
-const std::string DB_URI = "mongodb+srv://ivanchang30901:ulxXvrCaD0MtY4AZ@cluster0.nihxpln.mongodb.net/?appName=Cluster0";
 const std::string DB_NAME = "MainstreetMetricsDB";
 
 namespace Config {
@@ -1392,6 +1392,23 @@ void browseBusiness(BusinessManager& manager) {
 * Result: Program exit code (0 for success).
 ***/
 int main() {
+    // Get URI from env variables:
+    char* uri = nullptr;
+    size_t len = 0;
+
+    errno_t err = _dupenv_s(&uri, &len, "MAINSTREET_DB_URI");
+    
+    if (err || uri == nullptr) {
+        std::cerr << "[Fatal Error] Environment variable MAINSTREET_DB_URI not set.\n";
+        return 1;
+    }
+
+    // Safe uri
+    std::string DB_URI(uri);
+
+    // Free allocated memory
+    free(uri);
+
     // Initialize business manager with database connection
     BusinessManager manager(DB_URI, DB_NAME);
 
