@@ -1,202 +1,643 @@
 #include <iostream>
-#include <conio.h>
+#include <string>
+#include <vector>
+#include <limits>
+#include <conio.h> // For _getch() on Windows
+#include <iomanip>
 
-#include "Table.hpp"
 #include "BusinessManager.hpp"
+#include "Table.hpp"
 #include "UI.hpp"
 
 const std::string DB_URI = "mongodb+srv://ivanchang30901:ulxXvrCaD0MtY4AZ@cluster0.nihxpln.mongodb.net/?appName=Cluster0";
 const std::string DB_NAME = "MainstreetMetricsDB";
 
-void clearScreen() {
-    system("cls");
+// ==========================================
+// Security & Validation Functions
+// ==========================================
+
+/***
+* Purpose: Validates username input according to security rules.
+* Parameters: The username string to validate.
+* Result: True if valid, false otherwise.
+***/
+bool validateUsername(const std::string& username) {
+    if (username.length() < 3 || username.length() > 20) {
+        std::cout << "[Validation Error] Username must be 3-20 characters.\n";
+        return false;
+    }
+
+    // Check for alphanumeric and underscores only
+    for (char c : username) {
+        if (!std::isalnum(c) && c != '_') {
+            std::cout << "[Validation Error] Username can only contain letters, numbers, and underscores.\n";
+            return false;
+        }
+    }
+
+    return true;
 }
 
-int main() {
-    MenuManager menu(static_cast<std::string>(Ansi::Inverse) + static_cast<std::string>(Ansi::Bold) + Ansi::fg(Ansi::Color::BrightYellow), Ansi::fg(Ansi::Color::BrightYellow), '#');
-    menu.addElement("Play", 0, 0);
-    menu.addElement("Options", 20, 0);
-    menu.addElement("Exit", 40, 0);
+/***
+* Purpose: Validates password strength according to security requirements.
+* Parameters: The password string to validate.
+* Result: True if valid, false otherwise.
+***/
+bool validatePassword(const std::string& password) {
+    if (password.length() < 8) {
+        std::cout << "[Validation Error] Password must be at least 8 characters.\n";
+        return false;
+    }
 
-    // Input loop:
+    bool hasUpper = false, hasLower = false, hasDigit = false;
+
+    for (char c : password) {
+        if (std::isupper(c)) hasUpper = true;
+        if (std::islower(c)) hasLower = true;
+        if (std::isdigit(c)) hasDigit = true;
+    }
+
+    if (!hasUpper || !hasLower || !hasDigit) {
+        std::cout << "[Validation Error] Password must contain uppercase, lowercase, and digits.\n";
+        return false;
+    }
+
+    return true;
+}
+
+/***
+* Purpose: Validates rating input to ensure it's within acceptable range.
+* Parameters: The rating value to validate.
+* Result: True if valid (1-5), false otherwise.
+***/
+bool validateRating(int rating) {
+    if (rating < 1 || rating > 5) {
+        std::cout << "[Validation Error] Rating must be between 1 and 5.\n";
+        return false;
+    }
+    return true;
+}
+
+/***
+* Purpose: Validates business name input.
+* Parameters: The business name string to validate.
+* Result: True if valid, false otherwise.
+***/
+bool validateBusinessName(const std::string& name) {
+    if (name.empty() || name.length() > 100) {
+        std::cout << "[Validation Error] Business name must be 1-100 characters.\n";
+        return false;
+    }
+    return true;
+}
+
+/***
+* Purpose: Validates latitude coordinate.
+* Parameters: The latitude value to validate.
+* Result: True if valid (-90 to 90), false otherwise.
+***/
+bool validateLatitude(double lat) {
+    if (lat < -90.0 || lat > 90.0) {
+        std::cout << "[Validation Error] Latitude must be between -90 and 90.\n";
+        return false;
+    }
+    return true;
+}
+
+/***
+* Purpose: Validates longitude coordinate.
+* Parameters: The longitude value to validate.
+* Result: True if valid (-180 to 180), false otherwise.
+***/
+bool validateLongitude(double lon) {
+    if (lon < -180.0 || lon > 180.0) {
+        std::cout << "[Validation Error] Longitude must be between -180 and 180.\n";
+        return false;
+    }
+    return true;
+}
+
+/***
+* Purpose: Safely reads a line of input with buffer clearing.
+* Parameters: None.
+* Result: The input string.
+***/
+std::string safeGetline() {
+    std::string input;
+    std::getline(std::cin, input);
+    return input;
+}
+
+/***
+* Purpose: Safely reads an integer with input validation.
+* Parameters: None.
+* Result: The validated integer.
+***/
+int safeGetInt() {
+    int value;
+    while (!(std::cin >> value)) {
+        std::cin.clear();
+        std::cin.ignore(std::numeric_limits<std::streamsize>::max(), '\n');
+        std::cout << "[Input Error] Please enter a valid number: ";
+    }
+    std::cin.ignore(std::numeric_limits<std::streamsize>::max(), '\n');
+    return value;
+}
+
+/***
+* Purpose: Safely reads a double with input validation.
+* Parameters: None.
+* Result: The validated double.
+***/
+double safeGetDouble() {
+    double value;
+    while (!(std::cin >> value)) {
+        std::cin.clear();
+        std::cin.ignore(std::numeric_limits<std::streamsize>::max(), '\n');
+        std::cout << "[Input Error] Please enter a valid number: ";
+    }
+    std::cin.ignore(std::numeric_limits<std::streamsize>::max(), '\n');
+    return value;
+}
+
+// ==========================================
+// Display Functions
+// ==========================================
+
+/***
+* Purpose: Displays a list of businesses in a formatted table.
+* Parameters: Vector of Business objects to display, optional title for the table.
+* Result: None, prints formatted table to console.
+***/
+void displayBusinessTable(const std::vector<Business>& businesses, const std::string& title = "Businesses") {
+    if (businesses.empty()) {
+        std::cout << "\nNo businesses to display.\n";
+        return;
+    }
+
+    std::vector<std::string> headers = { "Name", "Category", "Rating", "Deal" };
+    std::vector<size_t> widths = { 25, 15, 8, 30 };
+
+    Table table(headers, widths, '=', '|');
+
+    for (const auto& b : businesses) {
+        std::ostringstream ratingStream;
+        ratingStream << std::fixed << std::setprecision(1) << b.avg_rating;
+
+        std::vector<std::string> row = {
+            b.name,
+            b.category,
+            ratingStream.str(),
+            b.special_deal.empty() ? "No deal" : b.special_deal
+        };
+
+        table.addRow(row);
+    }
+
+    std::cout << "\n=== " << title << " ===\n";
+    table.print();
+    std::cout << "\n";
+}
+
+/***
+* Purpose: Moves cursor to end of screen to prevent UI overlap.
+* Parameters: The row number to move to.
+* Result: None, moves cursor position.
+***/
+void moveCursorToEnd(int row = 25) {
+    std::cout << Ansi::moveTo(row, 1) << std::flush;
+}
+
+// ==========================================
+// Menu Navigation Functions
+// ==========================================
+
+/***
+* Purpose: Handles keyboard input for UI navigation using arrow keys or WASD.
+* Parameters: Reference to MenuManager object.
+* Result: Returns selected menu option name, or empty string if cancelled.
+***/
+std::string navigateMenu(MenuManager& menu) {
+    std::cout << Ansi::hideCursor;
+
     while (true) {
-        int ch = _getch();
-        std::cout << Ansi::clearScreen;
-        // Special keys
-        if (ch == 0 || ch == 224) {
-            // Get actual keycode
-            ch = _getch();
+        std::cout << Ansi::clearScreen << Ansi::moveTo(1, 1);
+        menu.draw();
 
-            switch (ch) {
-                case 72:
-                    menu.navigate(Direction::Up);
-                    break;
-                case 80:
-                    menu.navigate(Direction::Down);
+        int key = _getch();
 
-                    break;
-                case 75:
-                    menu.navigate(Direction::Left);
-                    break;
-                case 77:
-                    menu.navigate(Direction::Right);
-                    break;
-            }
-        }
-        // Normal keys
-        else {
-            if (ch == 13) {
-                std::cout << "Enter pressed\n";
-            }
-            else if (ch == 27) {
-                std::cout << "Escape pressed, exiting\n";
+        // Handle special keys (arrows)
+        if (key == 224 || key == 0) {
+            key = _getch();
+            switch (key) {
+            case 72: // Up arrow
+                menu.navigate(Direction::Up);
+                break;
+            case 80: // Down arrow
+                menu.navigate(Direction::Down);
+                break;
+            case 75: // Left arrow
+                menu.navigate(Direction::Left);
+                break;
+            case 77: // Right arrow
+                menu.navigate(Direction::Right);
                 break;
             }
-            else {
-                std::cout << "Other key: " << ch << "\n";
-            }
         }
-        
-        menu.draw();
-        std::cout << "Arrow keys to navigate, buttons are highlighted in yellow." << '\n';
-        std::cout << "Enter or space to select a button." << '\n';
+        // Handle WASD
+        else if (key == 'w' || key == 'W') {
+            menu.navigate(Direction::Up);
+        }
+        else if (key == 's' || key == 'S') {
+            menu.navigate(Direction::Down);
+        }
+        else if (key == 'a' || key == 'A') {
+            menu.navigate(Direction::Left);
+        }
+        else if (key == 'd' || key == 'D') {
+            menu.navigate(Direction::Right);
+        }
+        // Handle selection
+        else if (key == 13 || key == ' ') { // Enter or Space
+            std::cout << Ansi::showCursor;
+            std::cout << Ansi::clearScreen << Ansi::moveTo(1, 1);
+            return menu.getSelectedName();
+        }
+        // Handle escape
+        else if (key == 27) { // ESC
+            std::cout << Ansi::showCursor;
+            std::cout << Ansi::clearScreen << Ansi::moveTo(1, 1);
+            return "";
+        }
     }
-    
-    /*Table businessInfo({"Category", "Name", "Short Description", "Rating", "Distance"}, {10, 16, 32, 6, 8}, '-', '|', std::vector<std::string>(5, static_cast<std::string>(Ansi::Inverse)));
-    businessInfo.addRow({ "Food", "Chipotle", "Tasty mexican food.", "9.3", "1.2km" });
-    businessInfo.print();*/
-
 }
 
-/*const std::string URI = "mongodb+srv://ivanchang30901:ulxXvrCaD0MtY4AZ@cluster0.nihxpln.mongodb.net/?appName=Cluster0";
-    const std::string DB_NAME = "MainstreetMetricsDB";
+// ==========================================
+// Feature Implementation Functions
+// ==========================================
 
-    std::cout << "Initializing Byte-Sized Business Boost...\n";
+/***
+* Purpose: Handles user login process with input validation.
+* Parameters: Reference to BusinessManager object.
+* Result: None, updates login state in BusinessManager.
+***/
+void loginUser(BusinessManager& manager) {
+    std::cout << "\n=== User Login ===\n";
+    std::cout << "Username: ";
+    std::string username = safeGetline();
 
-    // Instantiate Manager
-    // This will throw an error and exit if the DB connection fails.
-    BusinessManager app(URI, DB_NAME);
+    std::cout << "Password: ";
+    std::string password = safeGetline();
 
-    int choice = 0;
-    bool running = true;
+    manager.login(username, password);
 
-    while (running) {
-        std::cout << "\n====================================\n";
-        std::cout << "      Byte-Sized Business Boost     \n";
-        std::cout << "====================================\n";
+    std::cout << "\nPress any key to continue...";
+    _getch();
+    moveCursorToEnd();
+}
 
-        if (app.isLoggedIn()) {
-            // === LOGGED IN MENU ===
-            std::cout << "1. View All Businesses\n";
-            std::cout << "2. Search by Category\n";
-            std::cout << "3. Find Businesses Near Me (Geo)\n";
-            std::cout << "4. Add New Business\n";
-            std::cout << "5. View My Bookmarks\n";
-            std::cout << "6. Logout\n";
-            std::cout << "0. Exit\n";
-            std::cout << "Select: ";
-            std::cin >> choice;
+/***
+* Purpose: Handles new user registration with strict validation.
+* Parameters: Reference to BusinessManager object.
+* Result: None, creates new user if validation passes.
+***/
+void registerUser(BusinessManager& manager) {
+    std::cout << "\n=== User Registration ===\n";
 
-            switch (choice) {
-            case 1: {
-                auto list = app.getAllBusinesses();
-                std::cout << "\n--- All Businesses ---\n";
-                for (const auto& b : list) {
-                    std::cout << "* " << b.name << " [" << b.category << "] Rating: " << b.avg_rating << "/5\n";
-                    std::cout << "  Deal: " << b.special_deal << "\n";
-                }
-                break;
-            }
-            case 2: {
-                std::string cat;
-                std::cout << "Enter Category (Food, Retail, Services): ";
-                std::cin >> cat; // Simple cin for single word categories
-                auto list = app.getBusinessesByCategory(cat);
-                for (const auto& b : list) std::cout << "* " << b.name << "\n";
-                break;
-            }
-            case 3: {
-                double lat, lon;
-                std::cout << "Enter Longitude: "; std::cin >> lon;
-                std::cout << "Enter Latitude: "; std::cin >> lat;
-                auto list = app.getBusinessesByLocation(lon, lat);
-                if (list.empty()) std::cout << "No businesses found near location.\n";
-                for (const auto& b : list) std::cout << "* " << b.name << " (Found near you)\n";
-                break;
-            }
-            case 4: {
-                // Logic to add business
-                std::string name, cat, desc, deal;
-                double lat, lon;
-                clearInput();
+    std::string username, password, email;
 
-                std::cout << "Business Name: "; std::getline(std::cin, name);
-                std::cout << "Category: "; std::getline(std::cin, cat);
-                std::cout << "Description: "; std::getline(std::cin, desc);
-                std::cout << "Special Deal: "; std::getline(std::cin, deal);
-                std::cout << "Longitude: "; std::cin >> lon;
-                std::cout << "Latitude: "; std::cin >> lat;
-
-                app.addBusiness(name, cat, desc, lon, lat, deal);
-                break;
-            }
-            case 5:
-                app.displayBookmarks();
-                break;
-            case 6:
-                app.logout();
-                break;
-            case 0:
-                running = false;
-                break;
-            default:
-                std::cout << "Invalid option.\n";
-            }
-
-        }
-        else {
-            // === GUEST / LOGIN MENU ===
-            std::cout << "1. Login\n";
-            std::cout << "2. Register New User\n";
-            std::cout << "3. Guest Mode (View Only)\n";
-            std::cout << "0. Exit\n";
-            std::cout << "Select: ";
-            std::cin >> choice;
-
-            switch (choice) {
-            case 1: {
-                std::string u, p;
-                std::cout << "Username: "; std::cin >> u;
-                std::cout << "Password: "; std::cin >> p;
-                app.login(u, p);
-                break;
-            }
-            case 2: {
-                std::string u, p, e;
-                std::cout << "Enter desired Username: "; std::cin >> u;
-                std::cout << "Enter Password: "; std::cin >> p;
-                std::cout << "Enter Email: "; std::cin >> e;
-
-                // Calls our updated registerUser function
-                app.registerUser(u, p, e);
-                break;
-            }
-            case 3:
-                std::cout << "\n[Guest Mode Active] Functionality limited to viewing.\n";
-                {
-                    auto list = app.getAllBusinesses();
-                    for (const auto& b : list) std::cout << "* " << b.name << "\n";
-                }
-                break;
-            case 0:
-                running = false;
-                break;
-            default:
-                clearInput(); // catch bad input types
-                std::cout << "Invalid option.\n";
-            }
-        }
+    // Username validation loop
+    while (true) {
+        std::cout << "Username (3-20 chars, alphanumeric + underscore): ";
+        username = safeGetline();
+        if (validateUsername(username)) break;
     }
 
-    std::cout << "Goodbye!\n";
-    return 0;*/
+    // Password validation loop
+    while (true) {
+        std::cout << "Password (8+ chars, must have upper, lower, digit): ";
+        password = safeGetline();
+        if (validatePassword(password)) break;
+    }
+
+    // Email input
+    std::cout << "Email: ";
+    email = safeGetline();
+
+    manager.registerUser(username, password, email);
+
+    std::cout << "\nPress any key to continue...";
+    _getch();
+    moveCursorToEnd();
+}
+
+/***
+* Purpose: Handles adding a new business with comprehensive validation.
+* Parameters: Reference to BusinessManager object.
+* Result: None, adds business to database if validation passes.
+***/
+void addBusiness(BusinessManager& manager) {
+    if (!manager.isLoggedIn()) {
+        std::cout << "\n[Error] You must be logged in to add businesses.\n";
+        std::cout << "Press any key to continue...";
+        _getch();
+        moveCursorToEnd();
+        return;
+    }
+
+    std::cout << "\n=== Add New Business ===\n";
+
+    std::string name, category, description, deal;
+    double longitude, latitude;
+
+    // Business name validation
+    while (true) {
+        std::cout << "Business Name: ";
+        name = safeGetline();
+        if (validateBusinessName(name)) break;
+    }
+
+    std::cout << "Category (e.g., food, retail, services): ";
+    category = safeGetline();
+
+    std::cout << "Description: ";
+    description = safeGetline();
+
+    // Longitude validation
+    while (true) {
+        std::cout << "Longitude (-180 to 180): ";
+        longitude = safeGetDouble();
+        if (validateLongitude(longitude)) break;
+    }
+
+    // Latitude validation
+    while (true) {
+        std::cout << "Latitude (-90 to 90): ";
+        latitude = safeGetDouble();
+        if (validateLatitude(latitude)) break;
+    }
+
+    std::cout << "Special Deal/Coupon (optional): ";
+    deal = safeGetline();
+
+    manager.addBusiness(name, category, description, longitude, latitude, deal);
+
+    std::cout << "\nPress any key to continue...";
+    _getch();
+    moveCursorToEnd();
+}
+
+/***
+* Purpose: Handles adding or editing a review with validation.
+* Parameters: Reference to BusinessManager object.
+* Result: None, adds/updates review in database.
+***/
+void addReview(BusinessManager& manager) {
+    if (!manager.isLoggedIn()) {
+        std::cout << "\n[Error] You must be logged in to add reviews.\n";
+        std::cout << "Press any key to continue...";
+        _getch();
+        moveCursorToEnd();
+        return;
+    }
+
+    std::cout << "\n=== Add/Edit Review ===\n";
+    std::cout << "Business ID: ";
+    std::string businessId = safeGetline();
+
+    int rating;
+    while (true) {
+        std::cout << "Rating (1-5): ";
+        rating = safeGetInt();
+        if (validateRating(rating)) break;
+    }
+
+    std::cout << "Comment: ";
+    std::string comment = safeGetline();
+
+    manager.addOrEditReview(businessId, rating, comment);
+
+    std::cout << "\nPress any key to continue...";
+    _getch();
+    moveCursorToEnd();
+}
+
+/***
+* Purpose: Displays businesses sorted by category using UI menu and Table.
+* Parameters: Reference to BusinessManager object.
+* Result: None, displays filtered businesses in table format.
+***/
+void browseByCategory(BusinessManager& manager) {
+    MenuManager categoryMenu(bg(Ansi::BgColor::Cyan) + fg(Ansi::Color::Black), fg(Ansi::Color::Green), '#');
+
+    categoryMenu.addElement("food", 5, 3);
+    categoryMenu.addElement("retail", 25, 3);
+    categoryMenu.addElement("services", 45, 3);
+    categoryMenu.addElement("entertainment", 5, 8);
+    categoryMenu.addElement("healthcare", 25, 8);
+    categoryMenu.addElement("back", 45, 8);
+
+    std::string selection = navigateMenu(categoryMenu);
+
+    if (selection.empty() || selection == "back") {
+        moveCursorToEnd();
+        return;
+    }
+
+    std::vector<Business> businesses = manager.getBusinessesByCategory(selection);
+    displayBusinessTable(businesses, "Businesses in Category: " + selection);
+
+    std::cout << "Press any key to continue...";
+    _getch();
+    moveCursorToEnd();
+}
+
+/***
+* Purpose: Displays businesses sorted by rating using Table.
+* Parameters: Reference to BusinessManager object.
+* Result: None, displays sorted businesses in table format.
+***/
+void browseByRating(BusinessManager& manager) {
+    std::vector<Business> businesses = manager.getBusinessesByRating();
+    displayBusinessTable(businesses, "Businesses Sorted by Rating");
+
+    std::cout << "Press any key to continue...";
+    _getch();
+    moveCursorToEnd();
+}
+
+/***
+* Purpose: Displays businesses sorted by location proximity using Table.
+* Parameters: Reference to BusinessManager object.
+* Result: None, displays sorted businesses in table format.
+***/
+void browseByLocation(BusinessManager& manager) {
+    std::cout << "\n=== Browse by Location ===\n";
+
+    double longitude, latitude;
+
+    while (true) {
+        std::cout << "Your Longitude (-180 to 180): ";
+        longitude = safeGetDouble();
+        if (validateLongitude(longitude)) break;
+    }
+
+    while (true) {
+        std::cout << "Your Latitude (-90 to 90): ";
+        latitude = safeGetDouble();
+        if (validateLatitude(latitude)) break;
+    }
+
+    std::vector<Business> businesses = manager.getBusinessesByLocation(longitude, latitude);
+    displayBusinessTable(businesses, "Businesses Near You");
+
+    std::cout << "Press any key to continue...";
+    _getch();
+    moveCursorToEnd();
+}
+
+/***
+* Purpose: Handles bookmark management with UI navigation.
+* Parameters: Reference to BusinessManager object.
+* Result: None, adds or removes bookmarks or displays saved bookmarks.
+***/
+void manageBookmarks(BusinessManager& manager) {
+    if (!manager.isLoggedIn()) {
+        std::cout << "\n[Error] You must be logged in to manage bookmarks.\n";
+        std::cout << "Press any key to continue...";
+        _getch();
+        moveCursorToEnd();
+        return;
+    }
+
+    MenuManager bookmarkMenu(bg(Ansi::BgColor::Magenta) + fg(Ansi::Color::White), fg(Ansi::Color::Cyan), '#');
+
+    bookmarkMenu.addElement("View Bookmarks", 5, 3);
+    bookmarkMenu.addElement("Add Bookmark", 25, 3);
+    bookmarkMenu.addElement("Remove Bookmark", 50, 3);
+    bookmarkMenu.addElement("back", 5, 8);
+
+    std::string selection = navigateMenu(bookmarkMenu);
+
+    if (selection.empty() || selection == "back") {
+        moveCursorToEnd();
+        return;
+    }
+
+    if (selection == "View Bookmarks") {
+        manager.displayBookmarks();
+    }
+    else if (selection == "Add Bookmark" || selection == "Remove Bookmark") {
+        std::cout << "Business ID: ";
+        std::string businessId = safeGetline();
+        manager.toggleBookmark(businessId);
+    }
+
+    std::cout << "\nPress any key to continue...";
+    _getch();
+    moveCursorToEnd();
+}
+
+/***
+* Purpose: Displays the main browsing menu using UI navigation.
+* Parameters: Reference to BusinessManager object.
+* Result: None, handles user navigation through browse options.
+***/
+void browseBusiness(BusinessManager& manager) {
+    MenuManager browseMenu(bg(Ansi::BgColor::Green) + fg(Ansi::Color::Black), fg(Ansi::Color::Yellow), '#');
+
+    browseMenu.addElement("All Businesses", 5, 3);
+    browseMenu.addElement("By Category", 25, 3);
+    browseMenu.addElement("By Rating", 50, 3);
+    browseMenu.addElement("By Location", 5, 8);
+    browseMenu.addElement("back", 25, 8);
+
+    std::string selection = navigateMenu(browseMenu);
+
+    if (selection.empty() || selection == "back") {
+        moveCursorToEnd();
+        return;
+    }
+
+    if (selection == "All Businesses") {
+        std::vector<Business> businesses = manager.getAllBusinesses();
+        displayBusinessTable(businesses, "All Businesses");
+        std::cout << "Press any key to continue...";
+        _getch();
+    }
+    else if (selection == "By Category") {
+        browseByCategory(manager);
+    }
+    else if (selection == "By Rating") {
+        browseByRating(manager);
+    }
+    else if (selection == "By Location") {
+        browseByLocation(manager);
+    }
+
+    moveCursorToEnd();
+}
+
+/***
+* Purpose: Main program entry point with menu loop.
+* Parameters: Command line arguments.
+* Result: Program exit code.
+***/
+int main() {
+
+    // DB Connection
+    BusinessManager manager(DB_URI, DB_NAME);
+
+    std::cout << Ansi::clearScreen << Ansi::moveTo(1, 1);
+    std::cout << "===========================================\n";
+    std::cout << "  Byte-Sized Business Boost - Main Menu\n";
+    std::cout << "===========================================\n\n";
+
+    while (true) {
+        MenuManager mainMenu(Ansi::bg(Ansi::BgColor::Blue) + Ansi::fg(Ansi::Color::White), fg(Ansi::Color::BrightYellow), '#');
+
+        mainMenu.addElement("Login", 5, 3);
+        mainMenu.addElement("Register", 25, 3);
+        mainMenu.addElement("Browse Businesses", 50, 3);
+        mainMenu.addElement("Add Business", 5, 8);
+        mainMenu.addElement("Add Review", 25, 8);
+        mainMenu.addElement("Bookmarks", 50, 8);
+        mainMenu.addElement("Logout", 5, 13);
+        mainMenu.addElement("Exit", 25, 13);
+
+        std::string choice = navigateMenu(mainMenu);
+
+        if (choice.empty() || choice == "Exit") {
+            std::cout << "\nThank you for using Byte-Sized Business Boost!\n";
+            break;
+        }
+
+        if (choice == "Login") {
+            loginUser(manager);
+        }
+        else if (choice == "Register") {
+            registerUser(manager);
+        }
+        else if (choice == "Browse Businesses") {
+            browseBusiness(manager);
+        }
+        else if (choice == "Add Business") {
+            addBusiness(manager);
+        }
+        else if (choice == "Add Review") {
+            addReview(manager);
+        }
+        else if (choice == "Bookmarks") {
+            manageBookmarks(manager);
+        }
+        else if (choice == "Logout") {
+            manager.logout();
+            std::cout << "\nPress any key to continue...";
+            _getch();
+        }
+
+        moveCursorToEnd();
+    }
+
+    return 0;
+}

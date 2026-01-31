@@ -157,6 +157,10 @@ namespace Ansi {
     ***/
     std::string restoreCursor();
 
+    // Visibility
+    constexpr std::string_view hideCursor = "\033[?25l";
+    constexpr std::string_view showCursor = "\033[?25h";
+
     // Clear screen and clear screen after the print and clear screen before the print.
     constexpr std::string_view clearScreen = "\x1b[2J";
     constexpr std::string_view clearScreenAfter = "\x1b[0J";
