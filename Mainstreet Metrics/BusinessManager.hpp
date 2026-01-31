@@ -1,17 +1,11 @@
-#include <iostream>
 #include <vector>
 #include <string>
 #include <optional>
-#include <algorithm>
-#include <random>
 #include <mutex>
-#include <regex>
 
 // MongoDB Driver Includes
-#include <bsoncxx/json.hpp>
 #include <mongocxx/client.hpp>
 #include <mongocxx/instance.hpp>
-#include <mongocxx/uri.hpp>
 #include <bsoncxx/builder/stream/document.hpp>
 #include <bsoncxx/builder/stream/helpers.hpp>
 
@@ -23,10 +17,12 @@ using bsoncxx::builder::stream::open_array;
 using bsoncxx::builder::stream::close_array;
 using bsoncxx::builder::stream::finalize;
 
-// ==========================================
-// Data Structures
-// ==========================================
-
+/***
+* Purpose: Represent a user account with authentication credentials, verification status, and saved bookmarks.
+* Parameters: None.
+* Result: A data structure containing all user-related information including their unique identifier,
+*          login credentials, email address, verification status, and a collection of bookmarked business IDs.
+***/
 struct User {
     std::string id;
     std::string username;
@@ -35,6 +31,13 @@ struct User {
     std::vector<std::string> bookmarks;
 };
 
+/***
+* Purpose: Represent a business entity with location data, ratings, and promotional information.
+* Parameters: None.
+* Result: A data structure containing business details including unique identifier, name, category,
+*          description text, average rating score, geographic coordinates in longitude and latitude,
+*          and any special deals or coupons associated with the business.
+***/
 struct Business {
     std::string id;
     std::string name;
@@ -43,448 +46,245 @@ struct Business {
     double avg_rating;
     double longitude;
     double latitude;
-    std::string special_deal; // Coupon or Deal text
+    std::string special_deal;
 };
 
+/***
+* Purpose: Represent a user's review of a business including their rating and comments.
+* Parameters: None.
+* Result: A data structure linking a specific user to a specific business with their numerical
+*          rating (1-5 scale) and textual comment describing their experience.
+***/
 struct Review {
     std::string business_id;
     std::string user_id;
-    int rating; // 1-5
+    int rating;
     std::string comment;
 };
 
-// ==========================================
-// Class Definition
-// ==========================================
-
+/***
+* Purpose: Manage business listings, user authentication, reviews, and bookmarks through a MongoDB database,
+*          providing comprehensive search, sorting, and user interaction capabilities.
+* Parameters: None.
+* Result: A complete business directory system that handles user registration and login with security features,
+*          allows verified users to add businesses, enables all users to search and filter businesses by various
+*          criteria including category, rating, and geographic proximity, supports user reviews with automatic
+*          rating aggregation, and provides bookmark functionality for saving favorite businesses.
+***/
 class BusinessManager {
 private:
-    mongocxx::instance instance{}; // The MongoDB instance must exist once
+    mongocxx::instance instance{};
     mongocxx::client client;
     mongocxx::database db;
 
-    // Collections
     mongocxx::collection businesses_coll;
     mongocxx::collection users_coll;
     mongocxx::collection reviews_coll;
 
-    // Session State
     std::optional<User> current_user;
     bool logged_in;
-    std::mutex db_mutex; // For thread safety
+    std::mutex db_mutex;
 
-    // --- Private Helper Functions ---
+    /***
+    * Purpose: Generate a hashed representation of a password for secure storage in the database.
+    * Parameters: The plain-text password string to be hashed.
+    * Result: A string containing the hashed password value. This is a simple demonstration hash
+    *         using standard library functions with a simulated salt. In production environments,
+    *         this should be replaced with industry-standard cryptographic hashing algorithms
+    *         such as BCrypt or Argon2 implemented through libraries like OpenSSL.
+    ***/
+    std::string hashPassword(const std::string& password);
 
-    /**
-     * @brief Simple hash function for demo purposes.
-     * WARNING: In production, use BCrypt or Argon2 via OpenSSL.
-     */
-    std::string hashPassword(const std::string& password) {
-        std::hash<std::string> hasher;
-        size_t hash = hasher(password + "SimulatedSalt123");
-        return std::to_string(hash);
-    }
+    /***
+    * Purpose: Recalculate and update the average rating for a specific business based on all reviews.
+    * Parameters: The unique business identifier string for which to update the rating.
+    * Result: Aggregates all review ratings for the specified business using MongoDB's aggregation
+    *         pipeline, computes the arithmetic mean, and updates the business document's avg_rating
+    *         field with the new calculated value. Handles errors gracefully by logging to stderr.
+    ***/
+    void updateBusinessAverageRating(const std::string& business_id);
 
-    /**
-     * @brief Recalculates the average rating for a business and updates the document.
-     */
-    void updateBusinessAverageRating(const std::string& business_id) {
-        try {
-            using bsoncxx::builder::basic::make_document;
-            using bsoncxx::builder::basic::kvp;
+    /***
+    * Purpose: Validate whether an email address conforms to standard email format patterns.
+    * Parameters: The email address string to validate.
+    * Result: Returns true if the email matches the expected pattern (text@domain.extension) using
+    *         regular expression matching, false otherwise. This checks for basic structural validity
+    *         including alphanumeric characters, optional dots or underscores in the local part,
+    *         the @ symbol, domain name, and at least one domain extension.
+    ***/
+    bool isValidEmail(const std::string& email);
 
-            // Pipeline to calculate average
-            mongocxx::pipeline pipe;
-            pipe.match(make_document(kvp("business_id", bsoncxx::oid(business_id))));
-            pipe.group(make_document(
-                kvp("_id", "$business_id"),
-                kvp("avg", make_document(kvp("$avg", "$rating")))
-            ));
+    /***
+    * Purpose: Query the database and convert MongoDB documents into Business struct objects.
+    * Parameters: A BSON document value representing the MongoDB query filter to apply, and optional
+    *            find options for sorting or limiting results.
+    * Result: Returns a vector of Business objects populated from matching database documents. Safely
+    *         handles optional fields and different numeric types (int32 vs double) for ratings. Parses
+    *         GeoJSON location data to extract longitude and latitude coordinates. Logs errors to stderr
+    *         if query execution fails.
+    ***/
+    std::vector<Business> fetchBusinesses(bsoncxx::document::value filter,
+        mongocxx::options::find opts = mongocxx::options::find{});
 
-            auto cursor = reviews_coll.aggregate(pipe);
-
-            for (auto&& doc : cursor) {
-                double new_avg = doc["avg"].get_double();
-
-                // Update business document
-                businesses_coll.update_one(
-                    make_document(kvp("_id", bsoncxx::oid(business_id))),
-                    make_document(kvp("$set", make_document(kvp("avg_rating", new_avg))))
-                );
-            }
-        }
-        catch (const std::exception& e) {
-            std::cerr << "Error updating average: " << e.what() << std::endl;
-        }
-    }
-
-    /**
-     * @brief Validates email format using Regex.
-     * Checks for standard pattern: text@domain.extension
-     */
-    bool isValidEmail(const std::string& email) {
-        // Standard email regex pattern
-        const std::regex pattern(R"((\w+)(\.|_)?(\w*)@(\w+)(\.(\w+))+)");
-        return std::regex_match(email, pattern);
-    }
+    /***
+    * Purpose: Display basic information about a business from its database document.
+    * Parameters: A BSON document view containing the business data to print.
+    * Result: Outputs the business's unique identifier and name to standard output in a formatted string.
+    ***/
+    void printBusinessDoc(bsoncxx::document::view view);
 
 public:
-    // Constructor
-    BusinessManager(const std::string& uri_string, const std::string& db_name)
-        : logged_in(false) {
-        try {
-            mongocxx::uri uri(uri_string);
-            client = mongocxx::client(uri);
-            db = client[db_name];
+    /***
+    * Purpose: Initialize the BusinessManager with a connection to a MongoDB database.
+    * Parameters: The MongoDB connection URI string specifying the database server address and credentials,
+    *            and the database name string to use for storing collections.
+    * Result: Establishes a connection to MongoDB using the provided URI, initializes references to the
+    *         businesses, users, and reviews collections, calls ensureIndexes to set up required database
+    *         indexes, and sets the initial login state to false. If connection fails, outputs an error
+    *         message and terminates the program.
+    ***/
+    BusinessManager(const std::string& uri_string, const std::string& db_name);
 
-            businesses_coll = db["businesses"];
-            users_coll = db["users"];
-            reviews_coll = db["reviews"];
+    /***
+    * Purpose: Create necessary database indexes to enable geospatial queries on business locations.
+    * Parameters: None.
+    * Result: Attempts to create a 2dsphere index on the location field of the businesses collection,
+    *         which is required for MongoDB's geospatial query operators like $near. Silently handles
+    *         the case where the index already exists by catching and ignoring exceptions.
+    ***/
+    void ensureIndexes();
 
-            ensureIndexes();
-            std::cout << "[System] Connected to MongoDB Atlas." << std::endl;
-        }
-        catch (const std::exception& e) {
-            std::cerr << "[Fatal Error] DB Connection failed: " << e.what() << std::endl;
-            exit(1);
-        }
-    }
+    /***
+    * Purpose: Verify that the user is human and not an automated bot through a simple arithmetic challenge.
+    * Parameters: None.
+    * Result: Generates two random numbers between 1 and 10, prompts the user to add them together,
+    *         accepts their answer via standard input, and returns true if the answer is correct or
+    *         false if incorrect. Clears the input buffer after reading to prevent issues with subsequent
+    *         input operations. Displays appropriate security messages to the user.
+    ***/
+    bool performBotCheck();
 
-    /**
-     * @brief Ensures GeoSpatial indexes exist for distance sorting.
-     */
-    void ensureIndexes() {
-        try {
-            // Create 2dsphere index on "location" field for businesses
-            auto index_spec = document{} << "location" << "2dsphere" << finalize;
-            businesses_coll.create_index(index_spec.view());
-        }
-        catch (...) {
-            // Index might already exist
-        }
-    }
+    /***
+    * Purpose: Create a new user account with username, password, and email after validation checks.
+    * Parameters: The desired username string, password string for authentication, and email address string.
+    * Result: Performs bot verification via CAPTCHA challenge, validates email format using regex, checks
+    *         database for existing users with the same username or email, and if all checks pass, inserts
+    *         a new user document with hashed password, unverified status, and empty bookmarks array.
+    *         Returns true if registration succeeds, false if any validation fails or database operation
+    *         encounters an error. Provides detailed feedback messages for each failure scenario.
+    ***/
+    bool registerUser(const std::string& username, const std::string& password, const std::string& email);
 
-    // ==========================================
-    // Authentication & Security
-    // ==========================================
+    /***
+    * Purpose: Authenticate a user and establish a logged-in session.
+    * Parameters: The username string and password string to verify against stored credentials.
+    * Result: Hashes the provided password and queries the database for a matching username and password
+    *         combination. If found, sets logged_in to true, populates the current_user with all user data
+    *         including their ID, username, email, verification status, and bookmarks, then welcomes the
+    *         user by name. Returns true on successful login, false if credentials don't match any user.
+    ***/
+    bool login(const std::string& username, const std::string& password);
 
-    /**
-     * @brief Interactive Bot Verification (CAPTCHA)
-     */
-    bool performBotCheck() {
-        std::random_device rd;
-        std::mt19937 gen(rd());
-        std::uniform_int_distribution<> distrib(1, 10);
+    /***
+    * Purpose: End the current user session and clear all session data.
+    * Parameters: None.
+    * Result: Sets logged_in to false, resets the current_user optional to empty state, and displays
+    *         a logout confirmation message.
+    ***/
+    void logout();
 
-        int a = distrib(gen);
-        int b = distrib(gen);
+    /***
+    * Purpose: Check whether a user is currently authenticated.
+    * Parameters: None.
+    * Result: Returns the current value of the logged_in boolean flag.
+    ***/
+    bool isLoggedIn() const;
 
-        std::cout << "[Security] Verify you are human: What is " << a << " + " << b << "? ";
-        int answer;
-        std::cin >> answer;
-
-        // Clear buffer
-        std::cin.ignore(std::numeric_limits<std::streamsize>::max(), '\n');
-
-        if (answer == (a + b)) return true;
-        std::cout << "[Security] Verification failed.\n";
-        return false;
-    }
-
-    bool registerUser(const std::string& username, const std::string& password, const std::string& email) {
-        std::cout << "\n--- New User Registration ---\n";
-
-        // 1. Bot Verification (CAPTCHA)
-        if (!performBotCheck()) {
-            std::cout << "[Error] Bot verification failed. Registration aborted.\n";
-            return false;
-        }
-
-        // 2. Email Syntax Validation
-        if (!isValidEmail(email)) {
-            std::cout << "[Error] Invalid email format (e.g., user@example.com).\n";
-            return false;
-        }
-
-        std::lock_guard<std::mutex> lock(db_mutex);
-
-        // 3. Database Uniqueness Check (Username)
-        auto user_exists = users_coll.find_one(document{} << "username" << username << finalize);
-        if (user_exists) {
-            std::cout << "[Error] Username '" << username << "' is already taken.\n";
-            return false;
-        }
-
-        // 4. Database Uniqueness Check (Email)
-        auto email_exists = users_coll.find_one(document{} << "email" << email << finalize);
-        if (email_exists) {
-            std::cout << "[Error] The email '" << email << "' is already registered.\n";
-            return false;
-        }
-
-        // 5. Insert New User
-        try {
-            auto builder = document{};
-            bsoncxx::document::value doc = builder
-                << "username" << username
-                << "password" << hashPassword(password) // Basic hashing
-                << "email" << email
-                << "is_verified" << false // Set to false until an admin/email flow validates it
-                << "bookmarks" << open_array << close_array
-                << finalize;
-
-            users_coll.insert_one(doc.view());
-            std::cout << "[Success] User registered successfully! You may now log in.\n";
-            return true;
-        }
-        catch (const std::exception& e) {
-            std::cerr << "[System Error] Registration failed: " << e.what() << "\n";
-            return false;
-        }
-    }
-
-    bool login(const std::string& username, const std::string& password) {
-        std::lock_guard<std::mutex> lock(db_mutex);
-
-        auto result = users_coll.find_one(document{}
-            << "username" << username
-            << "password" << hashPassword(password)
-            << finalize);
-
-        if (result) {
-            logged_in = true;
-            bsoncxx::document::view view = result->view();
-
-            User u;
-            u.id = view["_id"].get_oid().value.to_string();
-            u.username = view["username"].get_string().value.data();
-            u.email = view["email"].get_string().value.data();
-            u.is_verified = view["is_verified"].get_bool().value;
-
-            // Load bookmarks
-            if (view["bookmarks"] && view["bookmarks"].type() == bsoncxx::type::k_array) {
-                for (auto ele : view["bookmarks"].get_array().value) {
-                    u.bookmarks.push_back(ele.get_oid().value.to_string());
-                }
-            }
-
-            current_user = u;
-            std::cout << "Welcome back, " << u.username << "!\n";
-            return true;
-        }
-        else {
-            std::cout << "Invalid credentials.\n";
-            return false;
-        }
-    }
-
-    void logout() {
-        logged_in = false;
-        current_user.reset();
-        std::cout << "Logged out.\n";
-    }
-
-    bool isLoggedIn() const { return logged_in; }
-
-    // ==========================================
-    // Business Management
-    // ==========================================
-
+    /***
+    * Purpose: Insert a new business listing into the database with complete details and location.
+    * Parameters: Business name string, category string, description text, longitude coordinate as double,
+    *            latitude coordinate as double, and special deal or coupon text string.
+    * Result: Verifies that the current user is both logged in and verified before proceeding. Creates a
+    *         BSON document with all business fields including a GeoJSON Point structure for the location
+    *         coordinates, initializes avg_rating to 0.0, inserts the document into the businesses collection,
+    *         and confirms the addition with a success message. Denies the operation with an error message
+    *         if the user is not logged in or not verified.
+    ***/
     void addBusiness(const std::string& name, const std::string& category,
-        const std::string& desc, double lon, double lat, const std::string& deal) {
-        if (!logged_in || !current_user->is_verified) {
-            std::cout << "Error: You must be logged in and verified to add businesses.\n";
-            return;
-        }
+        const std::string& desc, double lon, double lat, const std::string& deal);
 
-        auto builder = document{};
-        bsoncxx::document::value doc = builder
-            << "name" << name
-            << "category" << category
-            << "description" << desc
-            << "avg_rating" << 0.0
-            << "special_deal" << deal
-            << "location" << open_document
-            << "type" << "Point"
-            << "coordinates" << open_array << lon << lat << close_array
-            << close_document
-            << finalize;
+    /***
+    * Purpose: Retrieve all business listings from the database without any filtering.
+    * Parameters: None.
+    * Result: Returns a vector containing Business objects for every document in the businesses collection.
+    ***/
+    std::vector<Business> getAllBusinesses();
 
-        businesses_coll.insert_one(doc.view());
-        std::cout << "Business '" << name << "' added.\n";
-    }
+    /***
+    * Purpose: Retrieve business listings that belong to a specific category.
+    * Parameters: The category name string to filter by.
+    * Result: Returns a vector of Business objects where the category field matches the provided value.
+    ***/
+    std::vector<Business> getBusinessesByCategory(const std::string& category);
 
-    // ==========================================
-    // Search & Sort Functionality
-    // ==========================================
+    /***
+    * Purpose: Retrieve all business listings sorted by their average rating in descending order.
+    * Parameters: None.
+    * Result: Returns a vector of Business objects ordered from highest to lowest avg_rating, allowing
+    *         users to see the best-rated businesses first.
+    ***/
+    std::vector<Business> getBusinessesByRating();
 
-    std::vector<Business> getAllBusinesses() {
-        return fetchBusinesses(document{} << finalize);
-    }
+    /***
+    * Purpose: Retrieve business listings sorted by proximity to a specific geographic location.
+    * Parameters: The longitude coordinate as double and latitude coordinate as double representing the
+    *            reference point from which to measure distances.
+    * Result: Uses MongoDB's $near geospatial query operator with the 2dsphere index to find and sort
+    *         businesses by their distance from the provided coordinates. Returns a vector of Business
+    *         objects ordered from nearest to farthest, enabling location-based search functionality.
+    ***/
+    std::vector<Business> getBusinessesByLocation(double lon, double lat);
 
-    std::vector<Business> getBusinessesByCategory(const std::string& category) {
-        return fetchBusinesses(document{} << "category" << category << finalize);
-    }
+    /***
+    * Purpose: Submit a new review for a business or update an existing review by the current user.
+    * Parameters: The business identifier string to review, an integer rating value between 1 and 5,
+    *            and a comment string containing the review text.
+    * Result: Verifies the user is logged in and the rating is within valid range (1-5). Uses MongoDB's
+    *         upsert operation to either insert a new review document if the user hasn't reviewed this
+    *         business before, or update their existing review with the new rating and comment. After
+    *         the review is saved, automatically triggers recalculation of the business's average rating.
+    *         Provides error messages if the user is not logged in, rating is invalid, or database
+    *         operation fails.
+    ***/
+    void addOrEditReview(const std::string& business_id, int rating, const std::string& comment);
 
-    // Sort by rating (Descending)
-    std::vector<Business> getBusinessesByRating() {
-        mongocxx::options::find opts;
-        opts.sort(document{} << "avg_rating" << -1 << finalize);
-        return fetchBusinesses(document{} << finalize, opts);
-    }
+    /***
+    * Purpose: Add or remove a business from the current user's bookmarks collection.
+    * Parameters: The business identifier string to bookmark or unbookmark.
+    * Result: Checks if the business ID already exists in the current user's bookmarks vector. If found,
+    *         removes it from both the in-memory vector and the database using MongoDB's $pull operator,
+    *         then confirms removal. If not found, adds it to both the in-memory vector and database
+    *         using $addToSet operator to prevent duplicates, then confirms addition. Only operates if
+    *         a user is logged in.
+    ***/
+    void toggleBookmark(const std::string& business_id);
 
-    // Sort by Distance (using GeoJSON)
-    std::vector<Business> getBusinessesByLocation(double lon, double lat) {
-        // $near query requires 2dsphere index
-        auto query = document{}
-            << "location" << open_document
-            << "$near" << open_document
-            << "$geometry" << open_document
-            << "type" << "Point"
-            << "coordinates" << open_array << lon << lat << close_array
-            << close_document
-            << close_document
-            << close_document
-            << finalize;
+    /***
+    * Purpose: Display all businesses that the current user has bookmarked.
+    * Parameters: None.
+    * Result: Checks if user is logged in and has any bookmarks saved. For each bookmarked business ID,
+    *         retrieves the corresponding business document from the database and displays its information
+    *         using printBusinessDoc. Shows a message if no bookmarks exist or user is not logged in.
+    ***/
+    void displayBookmarks();
 
-        return fetchBusinesses(query);
-    }
-
-    // ==========================================
-    // Reviews & Ratings
-    // ==========================================
-
-    void addOrEditReview(const std::string& business_id, int rating, const std::string& comment) {
-        if (!logged_in) {
-            std::cout << "Please login to leave a review.\n";
-            return;
-        }
-
-        if (rating < 1 || rating > 5) {
-            std::cout << "Rating must be 1-5.\n";
-            return;
-        }
-
-        try {
-            // Upsert: If user already reviewed this business, update it. If not, insert.
-            mongocxx::options::update opts;
-            opts.upsert(true);
-
-            auto filter = document{}
-                << "user_id" << bsoncxx::oid(current_user->id)
-                << "business_id" << bsoncxx::oid(business_id)
-                << finalize;
-
-            auto update = document{}
-                << "$set" << open_document
-                << "rating" << rating
-                << "comment" << comment
-                << close_document
-                << finalize;
-
-            reviews_coll.update_one(filter.view(), update.view(), opts);
-
-            // Trigger recalculation of the business's average
-            updateBusinessAverageRating(business_id);
-            std::cout << "Review posted/updated successfully.\n";
-
-        }
-        catch (const std::exception& e) {
-            std::cout << "Error posting review: " << e.what() << "\n";
-        }
-    }
-
-    // ==========================================
-    // Bookmarking
-    // ==========================================
-
-    void toggleBookmark(const std::string& business_id) {
-        if (!logged_in) return;
-
-        auto& bookmarks = current_user->bookmarks;
-        auto it = std::find(bookmarks.begin(), bookmarks.end(), business_id);
-
-        bsoncxx::oid bid(business_id);
-        bsoncxx::oid uid(current_user->id);
-
-        if (it != bookmarks.end()) {
-            // Remove
-            bookmarks.erase(it);
-            users_coll.update_one(
-                document{} << "_id" << uid << finalize,
-                document{} << "$pull" << open_document << "bookmarks" << bid << close_document << finalize
-            );
-            std::cout << "Bookmark removed.\n";
-        }
-        else {
-            // Add
-            bookmarks.push_back(business_id);
-            users_coll.update_one(
-                document{} << "_id" << uid << finalize,
-                document{} << "$addToSet" << open_document << "bookmarks" << bid << close_document << finalize
-            );
-            std::cout << "Bookmark added.\n";
-        }
-    }
-
-    void displayBookmarks() {
-        if (!logged_in) return;
-        if (current_user->bookmarks.empty()) {
-            std::cout << "No bookmarks saved.\n";
-            return;
-        }
-
-        std::cout << "--- Your Saved Businesses ---\n";
-        for (const auto& bid : current_user->bookmarks) {
-            auto doc = businesses_coll.find_one(document{} << "_id" << bsoncxx::oid(bid) << finalize);
-            if (doc) {
-                printBusinessDoc(doc->view());
-            }
-        }
-    }
-
-private:
-    // Internal helper to parse mongo documents into Business structs
-    std::vector<Business> fetchBusinesses(bsoncxx::document::value filter, mongocxx::options::find opts = mongocxx::options::find{}) {
-        std::vector<Business> results;
-        try {
-            auto cursor = businesses_coll.find(filter.view(), opts);
-            for (auto&& doc : cursor) {
-                Business b;
-                b.id = doc["_id"].get_oid().value.to_string();
-                b.name = doc["name"].get_string().value.data();
-                b.category = doc["category"].get_string().value.data();
-                b.description = doc["description"].get_string().value.data();
-
-                // Handle optional/variable fields safely
-                if (doc["avg_rating"]) {
-                    // Mongo might store 5.0 as int or double depending on driver version/insertion
-                    auto ele = doc["avg_rating"];
-                    if (ele.type() == bsoncxx::type::k_double) b.avg_rating = ele.get_double();
-                    else if (ele.type() == bsoncxx::type::k_int32) b.avg_rating = (double)ele.get_int32();
-                    else b.avg_rating = 0.0;
-                }
-
-                if (doc["special_deal"]) b.special_deal = doc["special_deal"].get_string().value.data();
-
-                // GeoJSON parsing
-                if (doc["location"] && doc["location"]["coordinates"]) {
-                    auto coords = doc["location"]["coordinates"].get_array().value;
-                    b.longitude = coords[0].get_double();
-                    b.latitude = coords[1].get_double();
-                }
-
-                results.push_back(b);
-            }
-        }
-        catch (const std::exception& e) {
-            std::cerr << "Query Error: " << e.what() << std::endl;
-        }
-        return results;
-    }
-
-    void printBusinessDoc(bsoncxx::document::view view) {
-        std::string name = view["name"].get_string().value.data();
-        std::cout << "ID: " << view["_id"].get_oid().value.to_string() << " | " << name << "\n";
-    }
+    /***
+    * Purpose: Retrieve all reviews for a specific business from the database.
+    * Parameters: The business identifier string for which to fetch reviews.
+    * Result: Queries the reviews collection for all documents matching the business_id, converts each
+    *         review document into a Review struct containing the business_id, user_id, rating, and comment,
+    *         and returns a vector of all reviews. Returns an empty vector if no reviews exist or if an
+    *         error occurs during the query.
+    ***/
+    std::vector<Review> getReviewsForBusiness(const std::string& business_id);
 };
