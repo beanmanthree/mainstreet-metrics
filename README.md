@@ -1,5 +1,5 @@
 # Mainstreet Metrics
-Mainstreet Metrics is a standalone C++ console application designed to help community members discover and support local small businesses. This tool provides and interactive interface for users to browse, review, and bookmark local favorites while securing user data through hashing and bot prevention measures.
+Mainstreet Metrics is a standalone C++ console application designed to help community members discover and support local small businesses. This tool provides and interactive interface for users to browse, review, and bookmark local favorites while securing user data through hashing and bot prevention measures. It also allows business owners to do a CSV export and has a simple, direction based UI.
 
 # Features
 To meet the 2025-2026 FBLA requirements, the application includes features such as:
