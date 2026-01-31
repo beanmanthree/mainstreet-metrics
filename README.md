@@ -9,3 +9,11 @@ To meet the 2025-2026 FBLA requirements, the application includes features such 
 * Favorites: The bookmarking feature allows users to svae specific businessess for easy access later.
 * Special Deals: A display system designed around special coupons and local deals.
 * Security Verification: Includes a simple bot-prevention captcha to ensure all intereactions are from humans.
+
+# Application Architecture:
+It follows a layered architecture:
+
+UI Layer (Menus, Tables, ANSI)
+Application Logic (Validation, Distance, Sorting, Export)
+BusinessManager API (Users, Businesses, Reviews, Bookmarks)
+MongoDB Backend
