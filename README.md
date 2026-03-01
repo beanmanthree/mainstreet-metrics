@@ -18,6 +18,6 @@ Application Logic (Validation, Distance, Sorting, Export)
 BusinessManager API (Users, Businesses, Reviews, Bookmarks)
 MongoDB Backend
 
-# Libraries used:
+#Libraries used:
 Open Source C++ standard library.
 User-defined headers.
