@@ -1,26 +1,26 @@
-#define _USE_MATH_DEFINES // M_PI
+#define _USE_MATH_DEFINES
 
 #include <iostream>
 #include <string>
 #include <vector>
 #include <limits>
-#include <conio.h> // For _getch() on Windows
 #include <iomanip>
 #include <fstream>
 #include <sstream>
 #include <cmath>
-#include <cstdlib> // Environment variables
+#include <cstdlib>
+#include <map>
+#include <algorithm>
+#include <stdexcept>
 
 #include "BusinessManager.hpp"
-#include "Table.hpp"
-#include "UI.hpp"
-#include "ansi.hpp"
 
-// Database connection configuration
+// ============================================================
+// Database configuration
+// ============================================================
 const std::string DB_NAME = "MainstreetMetricsDB";
 
 namespace Config {
-    // Validation constants
     const size_t MIN_USERNAME_LENGTH = 3;
     const size_t MAX_USERNAME_LENGTH = 20;
     const size_t MIN_PASSWORD_LENGTH = 8;
@@ -28,1460 +28,885 @@ namespace Config {
     const size_t MAX_DESCRIPTION_LENGTH = 500;
     const int MIN_RATING = 1;
     const int MAX_RATING = 5;
-    const double MIN_LATITUDE = -90.0;
-    const double MAX_LATITUDE = 90.0;
+    const double MIN_LATITUDE  = -90.0;
+    const double MAX_LATITUDE  =  90.0;
     const double MIN_LONGITUDE = -180.0;
-    const double MAX_LONGITUDE = 180.0;
-
-    // UI constants
-    const int CURSOR_END_ROW = 30;
-    const int DESCRIPTION_DISPLAY_LENGTH = 50;
-
-    // Earth radius in kilometers for distance calculation
+    const double MAX_LONGITUDE =  180.0;
     const double EARTH_RADIUS_KM = 6371.0;
-
-    // Valid categories - limited to what can be sorted by
     const std::vector<std::string> VALID_CATEGORIES = {
         "food", "retail", "services", "entertainment", "healthcare"
     };
 }
 
-/***
-* Purpose: Converts degrees to radians for geographic calculations.
-* Parameters: Angle in degrees.
-* Result: Angle in radians.
-***/
-double degreesToRadians(double degrees) {
-    return degrees * M_PI / 180.0;
-}
+// ============================================================
+// Geographic helpers
+// ============================================================
+double degreesToRadians(double d) { return d * M_PI / 180.0; }
 
-/***
-* Purpose: Calculates the great-circle distance between two geographic points using the Haversine formula.
-* Parameters: Latitude and longitude of two points in degrees.
-* Result: Distance in kilometers.
-***/
 double calculateDistance(double lat1, double lon1, double lat2, double lon2) {
-    // Convert coordinates to radians
-    double lat1Rad = degreesToRadians(lat1);
-    double lat2Rad = degreesToRadians(lat2);
-    double deltaLat = degreesToRadians(lat2 - lat1);
-    double deltaLon = degreesToRadians(lon2 - lon1);
-
-    // Haversine formula
-    double a = std::sin(deltaLat / 2) * std::sin(deltaLat / 2) +
-        std::cos(lat1Rad) * std::cos(lat2Rad) *
-        std::sin(deltaLon / 2) * std::sin(deltaLon / 2);
-
-    double c = 2 * std::atan2(std::sqrt(a), std::sqrt(1 - a));
-
-    return Config::EARTH_RADIUS_KM * c;
+    double r1 = degreesToRadians(lat1), r2 = degreesToRadians(lat2);
+    double dl = degreesToRadians(lat2 - lat1), dln = degreesToRadians(lon2 - lon1);
+    double a = std::sin(dl/2)*std::sin(dl/2) +
+               std::cos(r1)*std::cos(r2)*std::sin(dln/2)*std::sin(dln/2);
+    return Config::EARTH_RADIUS_KM * 2 * std::atan2(std::sqrt(a), std::sqrt(1-a));
 }
 
-/***
-* Purpose: Extends the Business structure to include calculated distance from user.
-* Parameters: None (struct definition).
-***/
 struct BusinessWithDistance {
     Business business;
     double distanceKm;
-
-    BusinessWithDistance(const Business& b, double dist = 0.0)
-        : business(b), distanceKm(dist) {
-    }
+    BusinessWithDistance(const Business& b, double d = 0.0) : business(b), distanceKm(d) {}
 };
 
-/***
-* Purpose: Validates username input according to security rules.
-* Parameters: The username string to validate.
-* Result: True if valid, false otherwise with error message displayed.
-***/
-bool validateUsername(const std::string& username) {
-    if (username.length() < Config::MIN_USERNAME_LENGTH ||
-        username.length() > Config::MAX_USERNAME_LENGTH) {
-        std::cout << "[Validation Error] Username must be "
-            << Config::MIN_USERNAME_LENGTH << "-"
-            << Config::MAX_USERNAME_LENGTH << " characters.\n";
-        return false;
-    }
+// ============================================================
+// URL decode
+// ============================================================
+static int hexVal(char c) {
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+    return 0;
+}
 
-    // Check for alphanumeric and underscores only
-    for (char c : username) {
-        if (!std::isalnum(c) && c != '_') {
-            std::cout << "[Validation Error] Username can only contain letters, numbers, and underscores.\n";
-            return false;
+std::string urlDecode(const std::string& s) {
+    std::string out;
+    for (size_t i = 0; i < s.size(); ++i) {
+        if (s[i] == '+') { out += ' '; }
+        else if (s[i] == '%' && i+2 < s.size()) {
+            out += (char)((hexVal(s[i+1]) << 4) | hexVal(s[i+2]));
+            i += 2;
+        } else { out += s[i]; }
+    }
+    return out;
+}
+
+// ============================================================
+// Parse query string or POST body into a map
+// ============================================================
+std::map<std::string, std::string> parseParams(const std::string& raw) {
+    std::map<std::string, std::string> m;
+    std::istringstream ss(raw);
+    std::string token;
+    while (std::getline(ss, token, '&')) {
+        auto eq = token.find('=');
+        if (eq == std::string::npos) { m[urlDecode(token)] = ""; continue; }
+        m[urlDecode(token.substr(0, eq))] = urlDecode(token.substr(eq+1));
+    }
+    return m;
+}
+
+// Get all CGI parameters (supports GET and POST)
+std::map<std::string, std::string> getCgiParams() {
+    std::string raw;
+    const char* method = std::getenv("REQUEST_METHOD");
+    if (method && std::string(method) == "POST") {
+        const char* lenStr = std::getenv("CONTENT_LENGTH");
+        if (lenStr) {
+            int len = std::atoi(lenStr);
+            if (len > 0 && len < 65536) {
+                raw.resize(len);
+                std::cin.read(&raw[0], len);
+            }
+        }
+    } else {
+        const char* qs = std::getenv("QUERY_STRING");
+        if (qs) raw = qs;
+    }
+    return parseParams(raw);
+}
+
+// ============================================================
+// HTML helpers
+// ============================================================
+std::string htmlEscape(const std::string& s) {
+    std::string out;
+    for (char c : s) {
+        switch (c) {
+            case '&':  out += "&amp;";  break;
+            case '<':  out += "&lt;";   break;
+            case '>':  out += "&gt;";   break;
+            case '"':  out += "&quot;"; break;
+            case '\'': out += "&#39;";  break;
+            default:   out += c;
         }
     }
+    return out;
+}
 
+void printHeader() {
+    //std::cout << "Content-Type: text/html\r\n\r\n";
+    std::cout << "<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n"
+              << "<meta charset=\"UTF-8\">\n"
+              << "<title>Mainstreet Metrics - Local Business Directory</title>\n"
+              << "</head>\n<body>\n";
+}
+
+void printFooter() {
+    std::cout << "<hr>\n"
+              << "<p><a href=\"/cgi-bin/Main.cgi\">Home</a> | "
+              << "<a href=\"/cgi-bin/Main.cgi?action=help\">Help</a></p>\n"
+              << "<script src=\"/session.js\"></script>"
+              << "</body>\n</html>\n";
+}
+
+void printNav(const std::string& currentUser) {
+    std::cout << "<h1>Mainstreet Metrics &mdash; Local Business Directory</h1>\n";
+    std::cout << "<nav>\n";
+    if (currentUser.empty()) {
+        std::cout << "<a href=\"/cgi-bin/Main.cgi?action=login_form\">Login</a> | "
+                  << "<a href=\"/cgi-bin/Main.cgi?action=register_form\">Register</a> | ";
+    } else {
+        std::cout << "<strong>Logged in as: " << htmlEscape(currentUser) << "</strong> | "
+                  << "<a href=\"/cgi-bin/Main.cgi?action=logout\">Logout</a> | "
+                  << "<a href=\"/cgi-bin/Main.cgi?action=bookmarks\">Bookmarks</a> | "
+                  << "<a href=\"/cgi-bin/Main.cgi?action=add_business_form\">Add Business</a> | "
+                  << "<a href=\"/cgi-bin/Main.cgi?action=add_review_form\">Add Review</a> | ";
+    }
+    std::cout << "<a href=\"/cgi-bin/Main.cgi?action=browse\">Browse Businesses</a>\n"
+              << "</nav>\n<hr>\n";
+}
+
+void printError(const std::string& msg) {
+    std::cout << "<p><strong>Error:</strong> " << htmlEscape(msg) << "</p>\n";
+}
+
+// ============================================================
+// Validation helpers (same logic as console version)
+// ============================================================
+bool validateUsername(const std::string& u, std::string& err) {
+    if (u.length() < Config::MIN_USERNAME_LENGTH || u.length() > Config::MAX_USERNAME_LENGTH) {
+        err = "Username must be 3-20 characters."; return false;
+    }
+    for (char c : u) if (!std::isalnum(c) && c != '_') {
+        err = "Username can only contain letters, numbers, and underscores."; return false;
+    }
     return true;
 }
 
-/***
-* Purpose: Validates password strength according to security requirements.
-* Parameters: The password string to validate.
-* Result: True if valid, false otherwise with error message displayed.
-***/
-bool validatePassword(const std::string& password) {
-    if (password.length() < Config::MIN_PASSWORD_LENGTH) {
-        std::cout << "[Validation Error] Password must be at least "
-            << Config::MIN_PASSWORD_LENGTH << " characters.\n";
-        return false;
+bool validatePassword(const std::string& p, std::string& err) {
+    if (p.length() < Config::MIN_PASSWORD_LENGTH) {
+        err = "Password must be at least 8 characters."; return false;
     }
-
-    bool hasUpper = false, hasLower = false, hasDigit = false, hasSpecial = false;
-
-    for (char c : password) {
-        if (std::isupper(c)) hasUpper = true;
-        if (std::islower(c)) hasLower = true;
-        if (std::isdigit(c)) hasDigit = true;
-        if (std::ispunct(c)) hasSpecial = true;
-    }
-
-    if (!hasUpper || !hasLower || !hasDigit) {
-        std::cout << "[Validation Error] Password must contain uppercase, lowercase, and digits.\n";
-        return false;
-    }
-
+    bool hu=false, hl=false, hd=false;
+    for (char c : p) { if(std::isupper(c)) hu=true; if(std::islower(c)) hl=true; if(std::isdigit(c)) hd=true; }
+    if (!hu || !hl || !hd) { err = "Password must contain uppercase, lowercase, and digits."; return false; }
     return true;
 }
 
-/***
-* Purpose: Validates rating input to ensure it's within acceptable range.
-* Parameters: The rating value to validate.
-* Result: True if valid (1-5), false otherwise with error message displayed.
-***/
-bool validateRating(int rating) {
-    if (rating < Config::MIN_RATING || rating > Config::MAX_RATING) {
-        std::cout << "[Validation Error] Rating must be between "
-            << Config::MIN_RATING << " and " << Config::MAX_RATING << ".\n";
-        return false;
-    }
+bool validateRating(int r, std::string& err) {
+    if (r < 1 || r > 5) { err = "Rating must be between 1 and 5."; return false; }
     return true;
 }
 
-/***
-* Purpose: Validates business name input with semantic validation.
-* Parameters: The business name string to validate.
-* Result: True if valid, false otherwise with error message displayed.
-***/
-bool validateBusinessName(const std::string& name) {
-    // Syntactic validation
-    if (name.empty() || name.length() > Config::MAX_BUSINESS_NAME_LENGTH) {
-        std::cout << "[Validation Error] Business name must be 1-"
-            << Config::MAX_BUSINESS_NAME_LENGTH << " characters.\n";
-        return false;
+bool validateBusinessName(const std::string& n, std::string& err) {
+    if (n.empty() || n.length() > Config::MAX_BUSINESS_NAME_LENGTH) {
+        err = "Business name must be 1-100 characters."; return false;
     }
-
-    // Semantic validation - check for meaningful content
-    bool hasAlphanumeric = false;
-    for (char c : name) {
-        if (std::isalnum(c)) {
-            hasAlphanumeric = true;
-            break;
-        }
-    }
-
-    if (!hasAlphanumeric) {
-        std::cout << "[Validation Error] Business name must contain at least one letter or number.\n";
-        return false;
-    }
-
+    bool ok = false;
+    for (char c : n) if (std::isalnum(c)) { ok = true; break; }
+    if (!ok) { err = "Business name must contain at least one letter or number."; return false; }
     return true;
 }
 
-/***
-* Purpose: Validates category against the list of valid categories.
-* Parameters: The category string to validate.
-* Result: True if valid, false otherwise with error message displayed.
-***/
-bool validateCategory(const std::string& category) {
-    auto it = std::find(Config::VALID_CATEGORIES.begin(), Config::VALID_CATEGORIES.end(), category);
+bool validateCategory(const std::string& c, std::string& err) {
+    auto it = std::find(Config::VALID_CATEGORIES.begin(), Config::VALID_CATEGORIES.end(), c);
     if (it == Config::VALID_CATEGORIES.end()) {
-        std::cout << "[Validation Error] Category must be one of: ";
-        for (size_t i = 0; i < Config::VALID_CATEGORIES.size(); ++i) {
-            std::cout << Config::VALID_CATEGORIES[i];
-            if (i < Config::VALID_CATEGORIES.size() - 1) std::cout << ", ";
-        }
-        std::cout << "\n";
-        return false;
+        err = "Category must be one of: food, retail, services, entertainment, healthcare."; return false;
     }
     return true;
 }
 
-/***
-* Purpose: Validates latitude coordinate with range checking.
-* Parameters: The latitude value to validate.
-* Result: True if valid (-90 to 90), false otherwise with error message displayed.
-***/
-bool validateLatitude(double lat) {
-    if (lat < Config::MIN_LATITUDE || lat > Config::MAX_LATITUDE) {
-        std::cout << "[Validation Error] Latitude must be between "
-            << Config::MIN_LATITUDE << " and " << Config::MAX_LATITUDE << ".\n";
-        return false;
+bool validateLatitude(double v, std::string& err) {
+    if (v < -90.0 || v > 90.0) { err = "Latitude must be between -90 and 90."; return false; }
+    return true;
+}
+
+bool validateLongitude(double v, std::string& err) {
+    if (v < -180.0 || v > 180.0) { err = "Longitude must be between -180 and 180."; return false; }
+    return true;
+}
+
+bool validateDescription(const std::string& d, std::string& err) {
+    if (d.length() > Config::MAX_DESCRIPTION_LENGTH) {
+        err = "Description must be under 500 characters."; return false;
     }
     return true;
 }
 
-/***
-* Purpose: Validates longitude coordinate with range checking.
-* Parameters: The longitude value to validate.
-* Result: True if valid (-180 to 180), false otherwise with error message displayed.
-***/
-bool validateLongitude(double lon) {
-    if (lon < Config::MIN_LONGITUDE || lon > Config::MAX_LONGITUDE) {
-        std::cout << "[Validation Error] Longitude must be between "
-            << Config::MIN_LONGITUDE << " and " << Config::MAX_LONGITUDE << ".\n";
-        return false;
+// ============================================================
+// CSV export helper (writes to a file on disk then shows link)
+// ============================================================
+std::string escapeCSV(const std::string& s) {
+    if (s.find(',') != std::string::npos || s.find('"') != std::string::npos || s.find('\n') != std::string::npos) {
+        std::string e = "\"";
+        for (char c : s) { if (c == '"') e += "\"\""; else e += c; }
+        e += "\""; return e;
     }
-    return true;
+    return s;
 }
 
-/***
-* Purpose: Validates description length.
-* Parameters: The description string to validate.
-* Result: True if valid, false otherwise with error message displayed.
-***/
-bool validateDescription(const std::string& description) {
-    if (description.length() > Config::MAX_DESCRIPTION_LENGTH) {
-        std::cout << "[Validation Error] Description must be under "
-            << Config::MAX_DESCRIPTION_LENGTH << " characters.\n";
-        return false;
-    }
-    return true;
-}
+// Writes CSV to wwwroot/exports/ and returns the web-accessible path
+std::string exportBusinessToCSV(const Business& b, const std::vector<Review>& reviews,
+                                 double userLat = 0.0, double userLon = 0.0) {
+    std::string safeName = b.name;
+    std::replace(safeName.begin(), safeName.end(), ' ', '_');
+    // Remove characters that are unsafe in filenames
+    safeName.erase(std::remove_if(safeName.begin(), safeName.end(),
+        [](char c){ return !std::isalnum(c) && c != '_' && c != '-'; }), safeName.end());
 
-/***
-* Purpose: Safely reads a line of input with buffer clearing and quit functionality.
-* Parameters: None.
-* Result: The input string with trailing whitespace removed, or "QUIT_SIGNAL" if user wants to quit.
-***/
-std::string safeGetline() {
-    std::string input;
-    std::getline(std::cin, input);
+    std::string filename = "C:\\inetpub\\wwwroot\\exports\\" + safeName + "_export.csv";
+    std::string webPath  = "/exports/" + safeName + "_export.csv";
 
-    // Check for quit command (case-insensitive)
-    std::string lowerInput = input;
-    std::transform(lowerInput.begin(), lowerInput.end(), lowerInput.begin(), ::tolower);
-    if (lowerInput == "quit") {
-        return "QUIT_SIGNAL";
-    }
+    std::ofstream f(filename);
+    if (!f.is_open()) return "";
 
-    return input;
-}
+    double dist = calculateDistance(userLat, userLon, b.latitude, b.longitude);
 
-/***
-* Purpose: Safely reads an integer with comprehensive error handling, validation, and quit functionality.
-* Parameters: None.
-* Result: The validated integer value, or INT_MIN if user wants to quit.
-***/
-int safeGetInt() {
-    std::string input;
-    int value;
+    f << "Business ID,Name,Category,Description,Average Rating,Special Deal,Latitude,Longitude,Distance (km),Review User,Review Rating,Review Comment\n";
 
-    while (true) {
-        std::getline(std::cin, input);
-
-        // Check for quit
-        std::string lowerInput = input;
-        std::transform(lowerInput.begin(), lowerInput.end(), lowerInput.begin(), ::tolower);
-        if (lowerInput == "quit") {
-            return INT_MIN;
-        }
-
-        std::istringstream iss(input);
-        if (iss >> value && iss.eof()) {
-            return value;
-        }
-
-        std::cout << "[Input Error] Please enter a valid integer number (or 'quit' to cancel): ";
-    }
-}
-
-/***
-* Purpose: Safely reads a double with comprehensive error handling, validation, and quit functionality.
-* Parameters: None.
-* Result: The validated double value, or NaN if user wants to quit.
-***/
-double safeGetDouble() {
-    std::string input;
-    double value;
-
-    while (true) {
-        std::getline(std::cin, input);
-
-        // Check for quit
-        std::string lowerInput = input;
-        std::transform(lowerInput.begin(), lowerInput.end(), lowerInput.begin(), ::tolower);
-        if (lowerInput == "quit") {
-            return std::numeric_limits<double>::quiet_NaN();
-        }
-
-        std::istringstream iss(input);
-        if (iss >> value && iss.eof()) {
-            return value;
-        }
-
-        std::cout << "[Input Error] Please enter a valid decimal number (or 'quit' to cancel): ";
-    }
-}
-
-/***
-* Purpose: Truncates a string to a specified length and adds ellipsis if needed.
-* Parameters: The input string and maximum length.
-* Result: The truncated string with "..." appended if truncation occurred.
-***/
-std::string truncateString(const std::string& str, size_t maxLength) {
-    if (str.length() <= maxLength) {
-        return str;
-    }
-    return str.substr(0, maxLength - 3) + "...";
-}
-
-/***
-* Purpose: Escapes special characters in strings for CSV export.
-* Parameters: The input string to escape.
-* Result: CSV-safe string with quotes and commas properly escaped.
-***/
-std::string escapeCSV(const std::string& str) {
-    if (str.find(',') != std::string::npos ||
-        str.find('"') != std::string::npos ||
-        str.find('\n') != std::string::npos) {
-        std::string escaped = "\"";
-        for (char c : str) {
-            if (c == '"') escaped += "\"\"";
-            else escaped += c;
-        }
-        escaped += "\"";
-        return escaped;
-    }
-    return str;
-}
-
-/***
-* Purpose: Exports a single business with its reviews to a CSV file.
-* Parameters: Business object, vector of reviews, filename, and user location coordinates.
-* Result: None, creates CSV file and displays success/error message to user.
-***/
-void exportBusinessToCSV(const Business& business,
-    const std::vector<Review>& reviews,
-    const std::string& filename,
-    double userLat = 0.0,
-    double userLon = 0.0) {
-    std::ofstream file(filename);
-
-    if (!file.is_open()) {
-        std::cout << "[Error] Could not create file: " << filename << "\n";
-        return;
-    }
-
-    double distance = calculateDistance(userLat, userLon, business.latitude, business.longitude);
-
-    // Write CSV header
-    file << "Business ID,Name,Category,Description,Average Rating,Special Deal,";
-    file << "Latitude,Longitude,Distance (km),Review User,Review Rating,Review Comment\n";
-
-    // If there are reviews, write one row per review
     if (!reviews.empty()) {
-        for (const auto& review : reviews) {
-            file << escapeCSV(business.id) << ","
-                << escapeCSV(business.name) << ","
-                << escapeCSV(business.category) << ","
-                << escapeCSV(business.description) << ","
-                << std::fixed << std::setprecision(2) << business.avg_rating << ","
-                << escapeCSV(business.special_deal.empty() ? "None" : business.special_deal) << ","
-                << std::setprecision(6) << business.latitude << ","
-                << business.longitude << ","
-                << std::setprecision(2) << distance << ","
-                << escapeCSV(review.user_id) << ","
-                << review.rating << ","
-                << escapeCSV(review.comment) << "\n";
+        for (const auto& r : reviews) {
+            f << escapeCSV(b.id) << "," << escapeCSV(b.name) << "," << escapeCSV(b.category) << ","
+              << escapeCSV(b.description) << "," << std::fixed << std::setprecision(2) << b.avg_rating << ","
+              << escapeCSV(b.special_deal.empty() ? "None" : b.special_deal) << ","
+              << std::setprecision(6) << b.latitude << "," << b.longitude << ","
+              << std::setprecision(2) << dist << ","
+              << escapeCSV(r.user_id) << "," << r.rating << "," << escapeCSV(r.comment) << "\n";
         }
+    } else {
+        f << escapeCSV(b.id) << "," << escapeCSV(b.name) << "," << escapeCSV(b.category) << ","
+          << escapeCSV(b.description) << "," << std::fixed << std::setprecision(2) << b.avg_rating << ","
+          << escapeCSV(b.special_deal.empty() ? "None" : b.special_deal) << ","
+          << std::setprecision(6) << b.latitude << "," << b.longitude << ","
+          << std::setprecision(2) << dist << ",,," << "\n";
     }
-    else {
-        // No reviews - write business data with empty review fields
-        file << escapeCSV(business.id) << ","
-            << escapeCSV(business.name) << ","
-            << escapeCSV(business.category) << ","
-            << escapeCSV(business.description) << ","
-            << std::fixed << std::setprecision(2) << business.avg_rating << ","
-            << escapeCSV(business.special_deal.empty() ? "None" : business.special_deal) << ","
-            << std::setprecision(6) << business.latitude << ","
-            << business.longitude << ","
-            << std::setprecision(2) << distance << ","
-            << "," << "," << "\n";
-    }
-
-    file.close();
-
-    std::cout << fg(Ansi::Color::Green) << "[Success] " << Ansi::Reset
-        << "Data exported to: " << filename << "\n";
-    std::cout << "Business data with " << reviews.size() << " review(s) exported.\n";
+    f.close();
+    return webPath;
 }
 
-/***
-* Purpose: Displays a list of businesses in a formatted table with comprehensive information.
-* Parameters: Vector of BusinessWithDistance objects, table title, flag for showing distance.
-* Result: None, prints formatted table to console with ID, name, category, rating, description, and optional distance.
-***/
-void displayBusinessTable(const std::vector<BusinessWithDistance>& businesses,
-    const std::string& title = "Businesses",
-    bool showDistance = false) {
-    if (businesses.empty()) {
-        std::cout << "\n" << fg(Ansi::Color::Yellow) << "[Info] " << Ansi::Reset
-            << "No businesses to display.\n";
+// ============================================================
+// HTML renderers for each view
+// ============================================================
+
+void renderHomePage() {
+    std::cout << "<h2>Welcome to Mainstreet Metrics</h2>\n"
+              << "<p>Discover and support your local community.</p>\n"
+              << "<ul>\n"
+              << "<li><a href=\"/cgi-bin/Main.cgi?action=browse\">Browse Businesses</a></li>\n"
+              << "<li><a href=\"/cgi-bin/Main.cgi?action=login_form\">Login</a></li>\n"
+              << "<li><a href=\"/cgi-bin/Main.cgi?action=register_form\">Register</a></li>\n"
+              << "<li><a href=\"/cgi-bin/Main.cgi?action=help\">Help</a></li>\n"
+              << "</ul>\n";
+}
+
+void renderHelpPage() {
+    std::cout << "<h2>Help &amp; Instructions</h2>\n"
+              << "<h3>Navigation</h3>\n"
+              << "<p>Use the links at the top of each page to navigate between features.</p>\n"
+              << "<h3>Features</h3>\n"
+              << "<ul>\n"
+              << "<li><strong>Register/Login</strong> &mdash; Create an account and sign in.</li>\n"
+              << "<li><strong>Browse Businesses</strong> &mdash; View all businesses, filter by category, sort by rating, or find businesses near you.</li>\n"
+              << "<li><strong>Add Business</strong> &mdash; Logged-in users can add new businesses.</li>\n"
+              << "<li><strong>Add Review</strong> &mdash; Logged-in users can rate and review businesses (1&ndash;5 stars).</li>\n"
+              << "<li><strong>Bookmarks</strong> &mdash; Save your favourite businesses for quick access.</li>\n"
+              << "<li><strong>Export CSV</strong> &mdash; Download a CSV report of any business including all its reviews.</li>\n"
+              << "</ul>\n"
+              << "<h3>Valid Categories</h3>\n"
+              << "<p>food, retail, services, entertainment, healthcare</p>\n"
+              << "<h3>Tips</h3>\n"
+              << "<ul>\n"
+              << "<li>Business IDs are shown in all tables &mdash; click the View link to see full details.</li>\n"
+              << "<li>Location sorting shows distance from the coordinates you enter.</li>\n"
+              << "<li>CSV files are saved to /exports/ on the server and a download link is shown.</li>\n"
+              << "<li>Only logged-in users can add businesses, add reviews, or manage bookmarks.</li>\n"
+              << "</ul>\n";
+}
+
+// Renders a table of businesses
+void renderBusinessTable(const std::vector<BusinessWithDistance>& bwds, bool showDistance) {
+    if (bwds.empty()) {
+        std::cout << "<p>No businesses found.</p>\n";
         return;
     }
+    std::cout << "<table border=\"1\" cellpadding=\"4\" cellspacing=\"0\">\n<thead>\n<tr>"
+              << "<th>Name</th><th>Category</th><th>Avg Rating</th><th>Description</th>";
+    if (showDistance) std::cout << "<th>Distance (km)</th>";
+    std::cout << "<th>Actions</th></tr>\n</thead>\n<tbody>\n";
 
-    // Table headers
-    std::vector<std::string> headers = { "ID", "Name", "Category", "Rating", "Description" };
-    std::vector<size_t> widths = { 26, 20, 12, 7, 40 };
-
-    if (showDistance) {
-        headers.push_back("Distance");
-        widths.push_back(12);
-    }
-
-    Table table(headers, widths, '=', '|');
-
-    // Add rows
-    for (const auto& bwd : businesses) {
+    for (const auto& bwd : bwds) {
         const Business& b = bwd.business;
+        std::string shortDesc = b.description.length() > 50
+            ? b.description.substr(0, 47) + "..." : b.description;
 
-        std::ostringstream ratingStream;
-        ratingStream << std::fixed << std::setprecision(1) << b.avg_rating << " #";
-
-        std::string shortDesc = truncateString(b.description, Config::DESCRIPTION_DISPLAY_LENGTH);
-
-        std::vector<std::string> row = {
-            truncateString(b.id, 24),
-            truncateString(b.name, 18),
-            truncateString(b.category, 10),
-            ratingStream.str(),
-            shortDesc
-        };
+        std::cout << "<tr>"
+                  << "<td>" << htmlEscape(b.name) << "</td>"
+                  << "<td>" << htmlEscape(b.category) << "</td>"
+                  << "<td>" << std::fixed << std::setprecision(1) << b.avg_rating << "</td>"
+                  << "<td>" << htmlEscape(shortDesc) << "</td>";
 
         if (showDistance) {
-            std::ostringstream distStream;
-            distStream << std::fixed << std::setprecision(2) << bwd.distanceKm << " km";
-            row.push_back(distStream.str());
+            std::cout << "<td>" << std::fixed << std::setprecision(2) << bwd.distanceKm << "</td>";
         }
 
-        table.addRow(row);
+        std::cout << "<td>"
+                  << "<a href=\"/cgi-bin/Main.cgi?action=view_details&id=" << htmlEscape(b.id) << "\">View</a>"
+                  << "</td>"
+                  << "</tr>\n";
     }
-
-    std::cout << "\n" << Ansi::Bold << fg(Ansi::Color::Cyan) << "=== " << title << " ==="
-        << Ansi::Reset << "\n";
-    table.print();
-    std::cout << fg(Ansi::Color::BrightBlack) << "Tip: Note the Business ID to view details or bookmark."
-        << Ansi::Reset << "\n\n";
+    std::cout << "</tbody>\n</table>\n";
 }
 
-/***
-* Purpose: Displays detailed information about a specific business including full description and reviews.
-* Parameters: BusinessManager reference, business ID string.
-* Result: None, prints detailed business information and reviews to console.
-***/
-void displayBusinessDetails(BusinessManager& manager, const std::string& businessId) {
-    // Get all businesses and find the one with matching ID
-    std::vector<Business> allBusinesses = manager.getAllBusinesses();
-    Business* selectedBusiness = nullptr;
+// Full business detail page
+void renderBusinessDetails(BusinessManager& manager, const std::string& id) {
+    std::vector<Business> all = manager.getAllBusinesses();
+    Business* found = nullptr;
+    for (auto& b : all) if (b.id == id) { found = &b; break; }
 
-    for (auto& b : allBusinesses) {
-        if (b.id == businessId) {
-            selectedBusiness = &b;
-            break;
-        }
-    }
+    if (!found) { printError("Business not found with ID: " + id); return; }
 
-    if (!selectedBusiness) {
-        std::cout << fg(Ansi::Color::Red) << "[Error] " << Ansi::Reset
-            << "Business not found with ID: " << businessId << "\n";
-        return;
-    }
+    std::cout << "<h2>" << htmlEscape(found->name) << "</h2>\n"
+              << "<table border=\"1\" cellpadding=\"4\">\n"
+              << "<tr><th>ID</th><td>" << htmlEscape(found->id) << "</td></tr>\n"
+              << "<tr><th>Category</th><td>" << htmlEscape(found->category) << "</td></tr>\n"
+              << "<tr><th>Average Rating</th><td>" << std::fixed << std::setprecision(1) << found->avg_rating << " / 5</td></tr>\n"
+              << "<tr><th>Location</th><td>Lat: " << found->latitude << ", Lon: " << found->longitude << "</td></tr>\n";
 
-    // Display detailed information
-    std::cout << "\n" << Ansi::Bold << bg(Ansi::BgColor::Blue) << fg(Ansi::Color::White)
-        << "==================================================================="
-        << Ansi::Reset << "\n";
-    std::cout << Ansi::Bold << fg(Ansi::Color::Cyan) << "  BUSINESS DETAILS" << Ansi::Reset << "\n";
-    std::cout << Ansi::Bold << bg(Ansi::BgColor::Blue) << fg(Ansi::Color::White)
-        << "==================================================================="
-        << Ansi::Reset << "\n\n";
+    if (!found->special_deal.empty())
+        std::cout << "<tr><th>Special Deal</th><td>" << htmlEscape(found->special_deal) << "</td></tr>\n";
 
-    std::cout << Ansi::Bold << "Business ID:  " << Ansi::Reset << selectedBusiness->id << "\n";
-    std::cout << Ansi::Bold << "Name:         " << Ansi::Reset << selectedBusiness->name << "\n";
-    std::cout << Ansi::Bold << "Category:     " << Ansi::Reset << selectedBusiness->category << "\n";
-    std::cout << Ansi::Bold << "Rating:       " << Ansi::Reset << fg(Ansi::Color::Yellow);
+    std::cout << "<tr><th>Description</th><td>" << htmlEscape(found->description) << "</td></tr>\n"
+              << "</table>\n";
 
-    // Display star rating visually
-    std::cout << std::fixed << std::setprecision(1) << selectedBusiness->avg_rating << " ";
-    int fullStars = static_cast<int>(selectedBusiness->avg_rating);
-    for (int i = 0; i < fullStars; ++i) {
-        std::cout << "#";
-    }
-    for (int i = fullStars; i < 5; ++i) {
-        std::cout << "-";
-    }
-    std::cout << Ansi::Reset << "\n";
-
-    std::cout << Ansi::Bold << "Location:     " << Ansi::Reset
-        << "(" << selectedBusiness->latitude << ", "
-        << selectedBusiness->longitude << ")\n";
-
-    if (!selectedBusiness->special_deal.empty()) {
-        std::cout << Ansi::Bold << fg(Ansi::Color::Green) << "Special Deal: " << Ansi::Reset
-            << bg(Ansi::BgColor::Green) << fg(Ansi::Color::Black) << " " << selectedBusiness->special_deal
-            << " " << Ansi::Reset << "\n";
-    }
-
-    std::cout << "\n" << Ansi::Bold << "Description:" << Ansi::Reset << "\n";
-    std::cout << selectedBusiness->description << "\n";
-
-    // Get and display reviews (up to 3)
-    std::cout << "\n" << Ansi::Bold << fg(Ansi::Color::Cyan) << "--- Recent Reviews ---" << Ansi::Reset << "\n";
-
-    std::vector<Review> reviews = manager.getReviewsForBusiness(businessId);
+    // Reviews
+    std::vector<Review> reviews = manager.getReviewsForBusiness(id);
+    std::cout << "<h3>Reviews (" << reviews.size() << ")</h3>\n";
 
     if (reviews.empty()) {
-        std::cout << fg(Ansi::Color::BrightBlack) << "No reviews yet. Be the first to review!\n" << Ansi::Reset;
-    }
-    else {
-        int displayCount = std::min(3, static_cast<int>(reviews.size()));
-        for (int i = 0; i < displayCount; ++i) {
-            std::cout << "\n" << fg(Ansi::Color::Yellow);
-            for (int j = 0; j < reviews[i].rating; ++j) std::cout << "#";
-            for (int j = reviews[i].rating; j < 5; ++j) std::cout << "-";
-            std::cout << Ansi::Reset << " (" << reviews[i].rating << "/5)\n";
-            std::cout << "User: " << reviews[i].user_id << "\n";
-            std::cout << "\"" << reviews[i].comment << "\"\n";
+        std::cout << "<p>No reviews yet. Be the first to review!</p>\n";
+    } else {
+        std::cout << "<table border=\"1\" cellpadding=\"4\" cellspacing=\"0\">\n"
+                  << "<thead><tr><th>User</th><th>Rating</th><th>Comment</th></tr></thead>\n<tbody>\n";
+        for (const auto& r : reviews) {
+            std::cout << "<tr><td>" << htmlEscape(r.user_id) << "</td>"
+                      << "<td>" << r.rating << " / 5</td>"
+                      << "<td>" << htmlEscape(r.comment) << "</td></tr>\n";
         }
-
-        if (reviews.size() > 3) {
-            std::cout << "\n" << fg(Ansi::Color::BrightBlack)
-                << "... and " << (reviews.size() - 3) << " more review(s)\n"
-                << Ansi::Reset;
-        }
+        std::cout << "</tbody></table>\n";
     }
 
-    std::cout << "\n" << Ansi::Bold << bg(Ansi::BgColor::Blue) << fg(Ansi::Color::White)
-        << "==================================================================="
-        << Ansi::Reset << "\n\n";
+    // Export CSV form
+    std::cout << "<h3>Export</h3>\n"
+              << "<form method=\"post\" action=\"/cgi-bin/Main.cgi\">\n"
+              << "<input type=\"hidden\" name=\"action\" value=\"export_csv\">\n"
+              << "<input type=\"hidden\" name=\"id\" value=\"" << htmlEscape(id) << "\">\n"
+              << "<button type=\"submit\">Export this business to CSV</button>\n"
+              << "</form>\n";
+
+    // Bookmark form
+    std::cout << "<h3>Bookmark</h3>\n"
+              << "<form method=\"post\" action=\"/cgi-bin/Main.cgi\">\n"
+              << "<input type=\"hidden\" name=\"action\" value=\"toggle_bookmark\">\n"
+              << "<input type=\"hidden\" name=\"id\" value=\"" << htmlEscape(id) << "\">\n"
+              << "<button type=\"submit\">Toggle Bookmark</button>\n"
+              << "</form>\n";
+
+    // Add review link
+    std::cout << "<p><a href=\"/cgi-bin/Main.cgi?action=add_review_form&id=" << htmlEscape(id)
+              << "\">Add / Edit Review for this business</a></p>\n";
 }
 
-/***
-* Purpose: Moves cursor to end of screen to prevent UI element overlap.
-* Parameters: The row number to move cursor to (default: configured end row).
-* Result: None, repositions terminal cursor.
-***/
-void moveCursorToEnd(int row = Config::CURSOR_END_ROW) {
-    std::cout << Ansi::moveTo(row, 1) << std::flush;
+// ============================================================
+// Form renderers
+// ============================================================
+
+void renderLoginForm(const std::string& errMsg = "") {
+    std::cout << "<h2>Login</h2>\n";
+    if (!errMsg.empty()) printError(errMsg);
+    std::cout << "<form method=\"post\" action=\"/cgi-bin/Main.cgi\">\n"
+              << "<input type=\"hidden\" name=\"action\" value=\"login\">\n"
+              << "<label>Username: <input type=\"text\" name=\"username\" required maxlength=\"20\"></label><br><br>\n"
+              << "<label>Password: <input type=\"password\" name=\"password\" required></label><br><br>\n"
+              << "<button type=\"submit\">Login</button>\n"
+              << "</form>\n"
+              << "<p>No account? <a href=\"/cgi-bin/Main.cgi?action=register_form\">Register here</a></p>\n";
 }
 
-/***
-* Purpose: Displays a help screen with navigation instructions and feature overview.
-* Parameters: None.
-* Result: None, prints help information to console.
-***/
-void displayHelpScreen() {
-    std::cout << Ansi::clearScreen << Ansi::moveTo(1, 1);
-    std::cout << Ansi::Bold << bg(Ansi::BgColor::Cyan) << fg(Ansi::Color::Black)
-        << "==================================================================="
-        << Ansi::Reset << "\n";
-    std::cout << Ansi::Bold << fg(Ansi::Color::Cyan) << "            MAINSTREET METRICS - HELP & INSTRUCTIONS"
-        << Ansi::Reset << "\n";
-    std::cout << Ansi::Bold << bg(Ansi::BgColor::Cyan) << fg(Ansi::Color::Black)
-        << "==================================================================="
-        << Ansi::Reset << "\n\n";
-
-    std::cout << Ansi::Bold << "NAVIGATION:" << Ansi::Reset << "\n";
-    std::cout << "  * Use " << fg(Ansi::Color::Green) << "ARROW KEYS" << Ansi::Reset
-        << " or " << fg(Ansi::Color::Green) << "WASD" << Ansi::Reset << " to move between menu options\n";
-    std::cout << "  * Press " << fg(Ansi::Color::Yellow) << "ENTER" << Ansi::Reset
-        << " or " << fg(Ansi::Color::Yellow) << "SPACE" << Ansi::Reset << " to select\n";
-    std::cout << "  * Press " << fg(Ansi::Color::Red) << "ESC" << Ansi::Reset << " to go back or cancel\n";
-    std::cout << "  * Type " << fg(Ansi::Color::Red) << "QUIT" << Ansi::Reset
-        << " at any input prompt to cancel the current operation\n\n";
-
-    std::cout << Ansi::Bold << "FEATURES:" << Ansi::Reset << "\n";
-    std::cout << "  > " << fg(Ansi::Color::Cyan) << "Register/Login" << Ansi::Reset
-        << " - Create account with bot verification\n";
-    std::cout << "  > " << fg(Ansi::Color::Cyan) << "Browse Businesses" << Ansi::Reset
-        << " - View by category, rating, or location\n";
-    std::cout << "  > " << fg(Ansi::Color::Cyan) << "Add Business" << Ansi::Reset
-        << " - Verified users can add new businesses\n";
-    std::cout << "  > " << fg(Ansi::Color::Cyan) << "Add Review" << Ansi::Reset
-        << " - Rate and review businesses (1-5 stars)\n";
-    std::cout << "  > " << fg(Ansi::Color::Cyan) << "Bookmarks" << Ansi::Reset
-        << " - Save your favorite businesses\n";
-    std::cout << "  > " << fg(Ansi::Color::Cyan) << "Export CSV" << Ansi::Reset
-        << " - Generate individual business reports with reviews\n\n";
-
-    std::cout << Ansi::Bold << "VALID CATEGORIES:" << Ansi::Reset << "\n";
-    std::cout << "  * ";
-    for (size_t i = 0; i < Config::VALID_CATEGORIES.size(); ++i) {
-        std::cout << fg(Ansi::Color::Cyan) << Config::VALID_CATEGORIES[i] << Ansi::Reset;
-        if (i < Config::VALID_CATEGORIES.size() - 1) std::cout << ", ";
-    }
-    std::cout << "\n\n";
-
-    std::cout << Ansi::Bold << "TIPS:" << Ansi::Reset << "\n";
-    std::cout << "  * Business IDs are displayed in tables - use them to view details\n";
-    std::cout << "  * Location sorting shows distance from your coordinates\n";
-    std::cout << "  * CSV exports include business data with all reviews\n";
-    std::cout << "  * Only verified users can add businesses\n";
-    std::cout << "  * Type 'quit' at any input prompt to cancel\n\n";
-
-    std::cout << Ansi::Bold << "ACCESSIBILITY:" << Ansi::Reset << "\n";
-    std::cout << "  * Color-coded UI for easy navigation\n";
-    std::cout << "  * Clear error messages and validation feedback\n";
-    std::cout << "  * Keyboard-only navigation (no mouse required)\n";
-    std::cout << "  * Table format for structured data viewing\n\n";
-
-    std::cout << fg(Ansi::Color::BrightBlack) << "Press any key to return to main menu..." << Ansi::Reset;
-    _getch();
+void renderRegisterForm(const std::string& errMsg = "") {
+    std::cout << "<h2>Register</h2>\n";
+    if (!errMsg.empty()) printError(errMsg);
+    std::cout << "<form method=\"post\" action=\"/cgi-bin/Main.cgi\">\n"
+              << "<input type=\"hidden\" name=\"action\" value=\"register\">\n"
+              << "<label>Username (3&ndash;20 chars, letters/numbers/underscore):<br>"
+              << "<input type=\"text\" name=\"username\" required minlength=\"3\" maxlength=\"20\"></label><br><br>\n"
+              << "<label>Password (8+ chars, must include upper, lower, digit):<br>"
+              << "<input type=\"password\" name=\"password\" required minlength=\"8\"></label><br><br>\n"
+              << "<label>Email:<br><input type=\"email\" name=\"email\" required></label><br><br>\n"
+              << "<button type=\"submit\">Register</button>\n"
+              << "</form>\n"
+              << "<script src=\"/verification.js\"></script>\n";
 }
 
-/***
-* Purpose: Handles keyboard input for UI navigation using arrow keys or WASD with visual feedback.
-* Parameters: Reference to MenuManager object.
-* Result: Returns selected menu option name as string, or empty string if cancelled.
-***/
-std::string navigateMenu(MenuManager& menu) {
-    std::cout << Ansi::hideCursor;
-
-    while (true) {
-        std::cout << Ansi::clearScreen << Ansi::moveTo(1, 1);
-        menu.draw();
-
-        // Display navigation hint at bottom
-        std::cout << Ansi::moveTo(22, 1) << fg(Ansi::Color::BrightBlack)
-            << "Use Arrow Keys/WASD to navigate | ENTER/SPACE to select | ESC to go back | H for Help"
-            << Ansi::Reset;
-
-        int key = _getch();
-
-        // Handle special keys (arrows)
-        if (key == 224 || key == 0) {
-            key = _getch();
-            switch (key) {
-            case 72: // Up arrow
-                menu.navigate(Direction::Up);
-                break;
-            case 80: // Down arrow
-                menu.navigate(Direction::Down);
-                break;
-            case 75: // Left arrow
-                menu.navigate(Direction::Left);
-                break;
-            case 77: // Right arrow
-                menu.navigate(Direction::Right);
-                break;
-            }
-        }
-        // Handle WASD
-        else if (key == 'w' || key == 'W') {
-            menu.navigate(Direction::Up);
-        }
-        else if (key == 's' || key == 'S') {
-            menu.navigate(Direction::Down);
-        }
-        else if (key == 'a' || key == 'A') {
-            menu.navigate(Direction::Left);
-        }
-        else if (key == 'd' || key == 'D') {
-            menu.navigate(Direction::Right);
-        }
-        // Handle help
-        else if (key == 'h' || key == 'H') {
-            std::cout << Ansi::showCursor;
-            displayHelpScreen();
-            std::cout << Ansi::hideCursor;
-        }
-        // Handle selection
-        else if (key == 13 || key == ' ') { // Enter or Space
-            std::cout << Ansi::showCursor;
-            std::cout << Ansi::clearScreen << Ansi::moveTo(1, 1);
-            return menu.getSelectedName();
-        }
-        // Handle escape
-        else if (key == 27) { // ESC
-            std::cout << Ansi::showCursor;
-            std::cout << Ansi::clearScreen << Ansi::moveTo(1, 1);
-            return "";
-        }
-    }
+void renderAddBusinessForm(const std::string& errMsg = "") {
+    std::cout << "<h2>Add New Business</h2>\n";
+    if (!errMsg.empty()) printError(errMsg);
+    std::cout << "<form method=\"post\" action=\"/cgi-bin/Main.cgi\">\n"
+              << "<input type=\"hidden\" name=\"action\" value=\"add_business\">\n"
+              << "<label>Business Name (1&ndash;100 chars):<br>"
+              << "<input type=\"text\" name=\"name\" required maxlength=\"100\"></label><br><br>\n"
+              << "<label>Category:<br>\n"
+              << "<select name=\"category\" required>\n"
+              << "<option value=\"\">-- Select --</option>\n";
+    for (const auto& cat : Config::VALID_CATEGORIES)
+        std::cout << "<option value=\"" << cat << "\">" << cat << "</option>\n";
+    std::cout << "</select></label><br><br>\n"
+              << "<label>Description (max 500 chars):<br>"
+              << "<textarea name=\"description\" rows=\"4\" cols=\"60\" maxlength=\"500\"></textarea></label><br><br>\n"
+              << "<label>Longitude (&minus;180 to 180):<br>"
+              << "<input type=\"number\" name=\"longitude\" step=\"any\" min=\"-180\" max=\"180\" required></label><br><br>\n"
+              << "<label>Latitude (&minus;90 to 90):<br>"
+              << "<input type=\"number\" name=\"latitude\" step=\"any\" min=\"-90\" max=\"90\" required></label><br><br>\n"
+              << "<label>Special Deal / Coupon (optional):<br>"
+              << "<input type=\"text\" name=\"deal\" maxlength=\"200\"></label><br><br>\n"
+              << "<button type=\"submit\">Add Business</button>\n"
+              << "</form>\n";
 }
 
-/***
-* Purpose: Handles user login process with comprehensive input validation and security checks.
-* Parameters: Reference to BusinessManager object.
-* Result: None, updates login state in BusinessManager and displays result to user.
-***/
-void loginUser(BusinessManager& manager) {
-    std::cout << "\n" << Ansi::Bold << fg(Ansi::Color::Cyan) << "=== User Login ==="
-        << Ansi::Reset << "\n";
-    std::cout << fg(Ansi::Color::BrightBlack) << "(Type 'quit' to cancel)" << Ansi::Reset << "\n";
-
-    std::cout << "Username: ";
-    std::string username = safeGetline();
-    if (username == "QUIT_SIGNAL") {
-        std::cout << fg(Ansi::Color::Yellow) << "Login cancelled.\n" << Ansi::Reset;
-        std::cout << "\nPress any key to continue...";
-        _getch();
-        moveCursorToEnd();
-        return;
-    }
-
-    std::cout << "Password: ";
-    std::string password = safeGetline();
-    if (password == "QUIT_SIGNAL") {
-        std::cout << fg(Ansi::Color::Yellow) << "Login cancelled.\n" << Ansi::Reset;
-        std::cout << "\nPress any key to continue...";
-        _getch();
-        moveCursorToEnd();
-        return;
-    }
-
-    manager.login(username, password);
-
-    std::cout << "\nPress any key to continue...";
-    _getch();
-    moveCursorToEnd();
+void renderAddReviewForm(const std::string& prefillId = "", const std::string& errMsg = "") {
+    std::cout << "<h2>Add / Edit Review</h2>\n";
+    if (!errMsg.empty()) printError(errMsg);
+    std::cout << "<form method=\"post\" action=\"/cgi-bin/Main.cgi\">\n"
+              << "<input type=\"hidden\" name=\"action\" value=\"add_review\">\n"
+              << "<label>Business ID:<br>"
+              << "<input type=\"text\" name=\"business_id\" required value=\"" << htmlEscape(prefillId) << "\"></label><br><br>\n"
+              << "<label>Rating (1&ndash;5):<br>\n"
+              << "<select name=\"rating\" required>\n"
+              << "<option value=\"\">-- Select --</option>\n";
+    for (int i = 1; i <= 5; ++i)
+        std::cout << "<option value=\"" << i << "\">" << i << " star" << (i>1?"s":"") << "</option>\n";
+    std::cout << "</select></label><br><br>\n"
+              << "<label>Comment:<br>"
+              << "<textarea name=\"comment\" rows=\"4\" cols=\"60\"></textarea></label><br><br>\n"
+              << "<button type=\"submit\">Submit Review</button>\n"
+              << "</form>\n";
 }
 
-/***
-* Purpose: Handles new user registration with strict multi-level validation and bot protection.
-* Parameters: Reference to BusinessManager object.
-* Result: None, creates new user account if all validation passes and displays result to user.
-***/
-void registerUser(BusinessManager& manager) {
-    std::cout << "\n" << Ansi::Bold << fg(Ansi::Color::Cyan) << "=== User Registration ==="
-        << Ansi::Reset << "\n";
-    std::cout << fg(Ansi::Color::BrightBlack) << "(Type 'quit' to cancel at any prompt)" << Ansi::Reset << "\n";
-
-    std::string username, password, email;
-
-    // Username validation loop with syntactic and semantic checks
-    while (true) {
-        std::cout << "Username (" << Config::MIN_USERNAME_LENGTH << "-"
-            << Config::MAX_USERNAME_LENGTH << " chars, alphanumeric + underscore): ";
-        username = safeGetline();
-        if (username == "QUIT_SIGNAL") {
-            std::cout << fg(Ansi::Color::Yellow) << "Registration cancelled.\n" << Ansi::Reset;
-            std::cout << "\nPress any key to continue...";
-            _getch();
-            moveCursorToEnd();
-            return;
-        }
-        if (validateUsername(username)) break;
-    }
-
-    // Password validation loop with strength requirements
-    while (true) {
-        std::cout << "Password (" << Config::MIN_PASSWORD_LENGTH
-            << "+ chars, must have upper, lower, digit): ";
-        password = safeGetline();
-        if (password == "QUIT_SIGNAL") {
-            std::cout << fg(Ansi::Color::Yellow) << "Registration cancelled.\n" << Ansi::Reset;
-            std::cout << "\nPress any key to continue...";
-            _getch();
-            moveCursorToEnd();
-            return;
-        }
-        if (validatePassword(password)) break;
-    }
-
-    // Email input
-    std::cout << "Email: ";
-    email = safeGetline();
-    if (email == "QUIT_SIGNAL") {
-        std::cout << fg(Ansi::Color::Yellow) << "Registration cancelled.\n" << Ansi::Reset;
-        std::cout << "\nPress any key to continue...";
-        _getch();
-        moveCursorToEnd();
-        return;
-    }
-
-    manager.registerUser(username, password, email);
-
-    std::cout << "\nPress any key to continue...";
-    _getch();
-    moveCursorToEnd();
+void renderBrowseMenu() {
+    std::cout << "<h2>Browse Businesses</h2>\n"
+              << "<ul>\n"
+              << "<li><a href=\"/cgi-bin/Main.cgi?action=browse_all\">All Businesses</a></li>\n"
+              << "<li><a href=\"/cgi-bin/Main.cgi?action=browse_category_form\">By Category</a></li>\n"
+              << "<li><a href=\"/cgi-bin/Main.cgi?action=browse_rating\">By Rating (Highest First)</a></li>\n"
+              << "<li><a href=\"/cgi-bin/Main.cgi?action=browse_location_form\">By Location (Nearest First)</a></li>\n"
+              << "</ul>\n";
 }
 
-/***
-* Purpose: Handles adding a new business with comprehensive validation on all inputs.
-* Parameters: Reference to BusinessManager object.
-* Result: None, adds business to database if all validations pass and user is verified.
-***/
-void addBusiness(BusinessManager& manager) {
-    if (!manager.isLoggedIn()) {
-        std::cout << "\n" << fg(Ansi::Color::Red) << "[Error] " << Ansi::Reset
-            << "You must be logged in to add businesses.\n";
-        std::cout << "Press any key to continue...";
-        _getch();
-        moveCursorToEnd();
-        return;
-    }
-
-    std::cout << "\n" << Ansi::Bold << fg(Ansi::Color::Cyan) << "=== Add New Business ==="
-        << Ansi::Reset << "\n";
-    std::cout << fg(Ansi::Color::BrightBlack) << "(Type 'quit' to cancel at any prompt)" << Ansi::Reset << "\n";
-
-    std::string name, category, description, deal;
-    double longitude, latitude;
-
-    // Business name validation with syntactic and semantic checks
-    while (true) {
-        std::cout << "Business Name (1-" << Config::MAX_BUSINESS_NAME_LENGTH << " chars): ";
-        name = safeGetline();
-        if (name == "QUIT_SIGNAL") {
-            std::cout << fg(Ansi::Color::Yellow) << "Add business cancelled.\n" << Ansi::Reset;
-            std::cout << "\nPress any key to continue...";
-            _getch();
-            moveCursorToEnd();
-            return;
-        }
-        if (validateBusinessName(name)) break;
-    }
-
-    // Category validation with limited options
-    while (true) {
-        std::cout << "Category (";
-        for (size_t i = 0; i < Config::VALID_CATEGORIES.size(); ++i) {
-            std::cout << Config::VALID_CATEGORIES[i];
-            if (i < Config::VALID_CATEGORIES.size() - 1) std::cout << ", ";
-        }
-        std::cout << "): ";
-        category = safeGetline();
-        if (category == "QUIT_SIGNAL") {
-            std::cout << fg(Ansi::Color::Yellow) << "Add business cancelled.\n" << Ansi::Reset;
-            std::cout << "\nPress any key to continue...";
-            _getch();
-            moveCursorToEnd();
-            return;
-        }
-        if (validateCategory(category)) break;
-    }
-
-    // Description validation
-    while (true) {
-        std::cout << "Description (max " << Config::MAX_DESCRIPTION_LENGTH << " chars): ";
-        description = safeGetline();
-        if (description == "QUIT_SIGNAL") {
-            std::cout << fg(Ansi::Color::Yellow) << "Add business cancelled.\n" << Ansi::Reset;
-            std::cout << "\nPress any key to continue...";
-            _getch();
-            moveCursorToEnd();
-            return;
-        }
-        if (validateDescription(description)) break;
-    }
-
-    // Longitude validation with range checking
-    while (true) {
-        std::cout << "Longitude (" << Config::MIN_LONGITUDE << " to "
-            << Config::MAX_LONGITUDE << "): ";
-        longitude = safeGetDouble();
-        if (std::isnan(longitude)) {
-            std::cout << fg(Ansi::Color::Yellow) << "Add business cancelled.\n" << Ansi::Reset;
-            std::cout << "\nPress any key to continue...";
-            _getch();
-            moveCursorToEnd();
-            return;
-        }
-        if (validateLongitude(longitude)) break;
-    }
-
-    // Latitude validation with range checking
-    while (true) {
-        std::cout << "Latitude (" << Config::MIN_LATITUDE << " to "
-            << Config::MAX_LATITUDE << "): ";
-        latitude = safeGetDouble();
-        if (std::isnan(latitude)) {
-            std::cout << fg(Ansi::Color::Yellow) << "Add business cancelled.\n" << Ansi::Reset;
-            std::cout << "\nPress any key to continue...";
-            _getch();
-            moveCursorToEnd();
-            return;
-        }
-        if (validateLatitude(latitude)) break;
-    }
-
-    std::cout << "Special Deal/Coupon (optional, press Enter to skip): ";
-    deal = safeGetline();
-    if (deal == "QUIT_SIGNAL") {
-        std::cout << fg(Ansi::Color::Yellow) << "Add business cancelled.\n" << Ansi::Reset;
-        std::cout << "\nPress any key to continue...";
-        _getch();
-        moveCursorToEnd();
-        return;
-    }
-
-    manager.addBusiness(name, category, description, longitude, latitude, deal);
-
-    std::cout << "\nPress any key to continue...";
-    _getch();
-    moveCursorToEnd();
+void renderBrowseCategoryForm() {
+    std::cout << "<h2>Browse by Category</h2>\n"
+              << "<form method=\"get\" action=\"/cgi-bin/Main.cgi\">\n"
+              << "<input type=\"hidden\" name=\"action\" value=\"browse_category\">\n"
+              << "<label>Category:<br>\n"
+              << "<select name=\"category\" required>\n"
+              << "<option value=\"\">-- Select --</option>\n";
+    for (const auto& cat : Config::VALID_CATEGORIES)
+        std::cout << "<option value=\"" << cat << "\">" << cat << "</option>\n";
+    std::cout << "</select></label><br><br>\n"
+              << "<button type=\"submit\">Browse</button>\n"
+              << "</form>\n";
 }
 
-/***
-* Purpose: Handles adding or editing a review with comprehensive input validation.
-* Parameters: Reference to BusinessManager object.
-* Result: None, adds or updates review in database if user is logged in and inputs are valid.
-***/
-void addReview(BusinessManager& manager) {
-    if (!manager.isLoggedIn()) {
-        std::cout << "\n" << fg(Ansi::Color::Red) << "[Error] " << Ansi::Reset
-            << "You must be logged in to add reviews.\n";
-        std::cout << "Press any key to continue...";
-        _getch();
-        moveCursorToEnd();
-        return;
-    }
-
-    std::cout << "\n" << Ansi::Bold << fg(Ansi::Color::Cyan) << "=== Add/Edit Review ==="
-        << Ansi::Reset << "\n";
-    std::cout << fg(Ansi::Color::BrightBlack) << "Tip: Get Business ID from the Browse menu"
-        << Ansi::Reset << "\n";
-    std::cout << fg(Ansi::Color::BrightBlack) << "(Type 'quit' to cancel at any prompt)" << Ansi::Reset << "\n\n";
-
-    std::cout << "Business ID: ";
-    std::string businessId = safeGetline();
-    if (businessId == "QUIT_SIGNAL") {
-        std::cout << fg(Ansi::Color::Yellow) << "Add review cancelled.\n" << Ansi::Reset;
-        std::cout << "\nPress any key to continue...";
-        _getch();
-        moveCursorToEnd();
-        return;
-    }
-
-    int rating;
-    while (true) {
-        std::cout << "Rating (" << Config::MIN_RATING << "-" << Config::MAX_RATING << " stars): ";
-        rating = safeGetInt();
-        if (rating == INT_MIN) {
-            std::cout << fg(Ansi::Color::Yellow) << "Add review cancelled.\n" << Ansi::Reset;
-            std::cout << "\nPress any key to continue...";
-            _getch();
-            moveCursorToEnd();
-            return;
-        }
-        if (validateRating(rating)) break;
-    }
-
-    std::cout << "Comment: ";
-    std::string comment = safeGetline();
-    if (comment == "QUIT_SIGNAL") {
-        std::cout << fg(Ansi::Color::Yellow) << "Add review cancelled.\n" << Ansi::Reset;
-        std::cout << "\nPress any key to continue...";
-        _getch();
-        moveCursorToEnd();
-        return;
-    }
-
-    manager.addOrEditReview(businessId, rating, comment);
-
-    std::cout << "\nPress any key to continue...";
-    _getch();
-    moveCursorToEnd();
+void renderBrowseLocationForm(const std::string& errMsg = "") {
+    std::cout << "<h2>Browse by Location</h2>\n";
+    if (!errMsg.empty()) printError(errMsg);
+    std::cout << "<form method=\"get\" action=\"/cgi-bin/Main.cgi\">\n"
+              << "<input type=\"hidden\" name=\"action\" value=\"browse_location\">\n"
+              << "<label>Your Longitude (&minus;180 to 180):<br>"
+              << "<input type=\"number\" name=\"lon\" step=\"any\" min=\"-180\" max=\"180\" required></label><br><br>\n"
+              << "<label>Your Latitude (&minus;90 to 90):<br>"
+              << "<input type=\"number\" name=\"lat\" step=\"any\" min=\"-90\" max=\"90\" required></label><br><br>\n"
+              << "<button type=\"submit\">Find Nearby Businesses</button>\n"
+              << "</form>\n";
 }
 
-/***
-* Purpose: Allows user to view detailed information about a specific business by ID.
-* Parameters: Reference to BusinessManager object.
-* Result: None, displays detailed business information and provides options to bookmark or export.
-***/
-void viewBusinessDetails(BusinessManager& manager) {
-    std::cout << "\n" << Ansi::Bold << fg(Ansi::Color::Cyan) << "=== View Business Details ==="
-        << Ansi::Reset << "\n";
-    std::cout << fg(Ansi::Color::BrightBlack) << "(Type 'quit' to cancel)" << Ansi::Reset << "\n";
+// ============================================================
+// Session helpers
+// A lightweight file-based session so user identity persists
+// between CGI invocations.  Session tokens are stored as
+// small text files in C:\inetpub\sessions\<token>.txt
+// containing the username.
+// ============================================================
+static std::string SESSION_DIR = "C:\\inetpub\\wwwroot\\sessions\\";
 
-    std::cout << "Business ID: ";
-    std::string businessId = safeGetline();
-    if (businessId == "QUIT_SIGNAL") {
-        std::cout << fg(Ansi::Color::Yellow) << "View cancelled.\n" << Ansi::Reset;
-        std::cout << "\nPress any key to continue...";
-        _getch();
-        moveCursorToEnd();
-        return;
-    }
-
-    displayBusinessDetails(manager, businessId);
-
-    // Export option
-    std::cout << fg(Ansi::Color::Yellow) << "Export this business to CSV? (y/n): " << Ansi::Reset;
-    std::string exportResponse = safeGetline();
-
-    if (exportResponse == "y" || exportResponse == "Y") {
-        // Get all businesses to find the specific one
-        std::vector<Business> allBusinesses = manager.getAllBusinesses();
-        Business* selectedBusiness = nullptr;
-
-        for (auto& b : allBusinesses) {
-            if (b.id == businessId) {
-                selectedBusiness = &b;
-                break;
-            }
-        }
-
-        if (selectedBusiness) {
-            std::vector<Review> reviews = manager.getReviewsForBusiness(businessId);
-            std::string filename = selectedBusiness->name + "_export.csv";
-            // Replace spaces with underscores in filename
-            std::replace(filename.begin(), filename.end(), ' ', '_');
-            exportBusinessToCSV(*selectedBusiness, reviews, filename);
-        }
-    }
-
-    // Bookmark option
-    if (manager.isLoggedIn()) {
-        std::cout << fg(Ansi::Color::Yellow) << "Would you like to bookmark this business? (y/n): "
-            << Ansi::Reset;
-        std::string response = safeGetline();
-
-        if (response == "y" || response == "Y") {
-            manager.toggleBookmark(businessId);
-        }
-    }
-
-    std::cout << "\nPress any key to continue...";
-    _getch();
-    moveCursorToEnd();
+std::string readCookie(const std::string& name) {
+    const char* cookies = std::getenv("HTTP_COOKIE");
+    if (!cookies) return "";
+    std::string all(cookies);
+    std::string search = name + "=";
+    auto pos = all.find(search);
+    if (pos == std::string::npos) return "";
+    pos += search.size();
+    auto end = all.find(';', pos);
+    return (end == std::string::npos) ? all.substr(pos) : all.substr(pos, end - pos);
 }
 
-/***
-* Purpose: Displays businesses sorted by category using UI menu navigation and Table display.
-* Parameters: Reference to BusinessManager object.
-* Result: None, displays filtered businesses in table format with option to export or view details.
-***/
-void browseByCategory(BusinessManager& manager) {
-    MenuManager categoryMenu(bg(Ansi::BgColor::Cyan) + fg(Ansi::Color::Black), fg(Ansi::Color::Green), '#');
-
-    categoryMenu.addElement("food", 5, 3);
-    categoryMenu.addElement("retail", 25, 3);
-    categoryMenu.addElement("services", 45, 3);
-    categoryMenu.addElement("entertainment", 5, 8);
-    categoryMenu.addElement("healthcare", 25, 8);
-    categoryMenu.addElement("back", 45, 8);
-
-    std::string selection = navigateMenu(categoryMenu);
-
-    if (selection.empty() || selection == "back") {
-        moveCursorToEnd();
-        return;
-    }
-
-    std::vector<Business> businesses = manager.getBusinessesByCategory(selection);
-
-    // Convert to BusinessWithDistance for consistent interface
-    std::vector<BusinessWithDistance> businessesWD;
-    for (const auto& b : businesses) {
-        businessesWD.emplace_back(b, 0.0);
-    }
-
-    displayBusinessTable(businessesWD, "Businesses in Category: " + selection, false);
-
-    // View details option
-    std::cout << fg(Ansi::Color::Yellow) << "View business details? Enter ID or press Enter to skip: "
-        << Ansi::Reset;
-    std::string id = safeGetline();
-
-    if (!id.empty() && id != "QUIT_SIGNAL") {
-        displayBusinessDetails(manager, id);
-
-        // Export option for individual business
-        std::cout << fg(Ansi::Color::Yellow) << "Export this business to CSV? (y/n): " << Ansi::Reset;
-        std::string exportResponse = safeGetline();
-
-        if (exportResponse == "y" || exportResponse == "Y") {
-            // Find the business
-            Business* selectedBusiness = nullptr;
-            for (auto& bwd : businessesWD) {
-                if (bwd.business.id == id) {
-                    selectedBusiness = &bwd.business;
-                    break;
-                }
-            }
-
-            if (selectedBusiness) {
-                std::vector<Review> reviews = manager.getReviewsForBusiness(id);
-                std::string filename = selectedBusiness->name + "_export.csv";
-                std::replace(filename.begin(), filename.end(), ' ', '_');
-                exportBusinessToCSV(*selectedBusiness, reviews, filename);
-            }
-        }
-    }
-
-    std::cout << "\nPress any key to continue...";
-    _getch();
-    moveCursorToEnd();
+// Emit a Set-Cookie header BEFORE Content-Type (must be called before printHeader)
+void setSessionCookie(const std::string& token) {
+    // std::cout << "Set-Cookie: session=" << token << "; Path=/; HttpOnly\r\n"; - Broken, rewrite when server is fixed to print html document.
 }
 
-/***
-* Purpose: Displays businesses sorted by rating (highest first) using Table display.
-* Parameters: Reference to BusinessManager object.
-* Result: None, displays sorted businesses in table format with option to export or view details.
-***/
-void browseByRating(BusinessManager& manager) {
-    std::vector<Business> businesses = manager.getBusinessesByRating();
-
-    // Convert to BusinessWithDistance for consistent interface
-    std::vector<BusinessWithDistance> businessesWD;
-    for (const auto& b : businesses) {
-        businessesWD.emplace_back(b, 0.0);
-    }
-
-    displayBusinessTable(businessesWD, "Businesses Sorted by Rating (Highest First)", false);
-
-    // View details option
-    std::cout << fg(Ansi::Color::Yellow) << "View business details? Enter ID or press Enter to skip: "
-        << Ansi::Reset;
-    std::string id = safeGetline();
-
-    if (!id.empty() && id != "QUIT_SIGNAL") {
-        displayBusinessDetails(manager, id);
-
-        // Export option for individual business
-        std::cout << fg(Ansi::Color::Yellow) << "Export this business to CSV? (y/n): " << Ansi::Reset;
-        std::string exportResponse = safeGetline();
-
-        if (exportResponse == "y" || exportResponse == "Y") {
-            // Find the business
-            Business* selectedBusiness = nullptr;
-            for (auto& bwd : businessesWD) {
-                if (bwd.business.id == id) {
-                    selectedBusiness = &bwd.business;
-                    break;
-                }
-            }
-
-            if (selectedBusiness) {
-                std::vector<Review> reviews = manager.getReviewsForBusiness(id);
-                std::string filename = selectedBusiness->name + "_export.csv";
-                std::replace(filename.begin(), filename.end(), ' ', '_');
-                exportBusinessToCSV(*selectedBusiness, reviews, filename);
-            }
-        }
-    }
-
-    std::cout << "\nPress any key to continue...";
-    _getch();
-    moveCursorToEnd();
+void clearSessionCookie() {
+    // std::cout << "Set-Cookie: session=; Path=/; Max-Age=0\r\n";
 }
 
-/***
-* Purpose: Displays businesses sorted by location proximity with distance calculations using Table display.
-* Parameters: Reference to BusinessManager object.
-* Result: None, displays sorted businesses with distances in table format with export and detail view options.
-***/
-void browseByLocation(BusinessManager& manager) {
-    std::cout << "\n" << Ansi::Bold << fg(Ansi::Color::Cyan) << "=== Browse by Location ==="
-        << Ansi::Reset << "\n";
-    std::cout << fg(Ansi::Color::BrightBlack) << "(Type 'quit' to cancel at any prompt)" << Ansi::Reset << "\n";
-
-    double userLongitude, userLatitude;
-
-    // Get user location with validation
-    while (true) {
-        std::cout << "Your Longitude (" << Config::MIN_LONGITUDE << " to "
-            << Config::MAX_LONGITUDE << "): ";
-        userLongitude = safeGetDouble();
-        if (std::isnan(userLongitude)) {
-            std::cout << fg(Ansi::Color::Yellow) << "Browse by location cancelled.\n" << Ansi::Reset;
-            std::cout << "\nPress any key to continue...";
-            _getch();
-            moveCursorToEnd();
-            return;
-        }
-        if (validateLongitude(userLongitude)) break;
-    }
-
-    while (true) {
-        std::cout << "Your Latitude (" << Config::MIN_LATITUDE << " to "
-            << Config::MAX_LATITUDE << "): ";
-        userLatitude = safeGetDouble();
-        if (std::isnan(userLatitude)) {
-            std::cout << fg(Ansi::Color::Yellow) << "Browse by location cancelled.\n" << Ansi::Reset;
-            std::cout << "\nPress any key to continue...";
-            _getch();
-            moveCursorToEnd();
-            return;
-        }
-        if (validateLatitude(userLatitude)) break;
-    }
-
-    // Get businesses sorted by location
-    std::vector<Business> businesses = manager.getBusinessesByLocation(userLongitude, userLatitude);
-
-    // Calculate distances and create BusinessWithDistance objects
-    std::vector<BusinessWithDistance> businessesWD;
-    for (const auto& b : businesses) {
-        double distance = calculateDistance(userLatitude, userLongitude, b.latitude, b.longitude);
-        businessesWD.emplace_back(b, distance);
-    }
-
-    // Display with distance column
-    displayBusinessTable(businessesWD, "Businesses Near You (Sorted by Distance)", true);
-
-    // View details option
-    std::cout << fg(Ansi::Color::Yellow) << "View business details? Enter ID or press Enter to skip: "
-        << Ansi::Reset;
-    std::string id = safeGetline();
-
-    if (!id.empty() && id != "QUIT_SIGNAL") {
-        displayBusinessDetails(manager, id);
-
-        // Export option for individual business
-        std::cout << fg(Ansi::Color::Yellow) << "Export this business to CSV? (y/n): " << Ansi::Reset;
-        std::string exportResponse = safeGetline();
-
-        if (exportResponse == "y" || exportResponse == "Y") {
-            // Find the business
-            Business* selectedBusiness = nullptr;
-            for (auto& bwd : businessesWD) {
-                if (bwd.business.id == id) {
-                    selectedBusiness = &bwd.business;
-                    break;
-                }
-            }
-
-            if (selectedBusiness) {
-                std::vector<Review> reviews = manager.getReviewsForBusiness(id);
-                std::string filename = selectedBusiness->name + "_export.csv";
-                std::replace(filename.begin(), filename.end(), ' ', '_');
-                exportBusinessToCSV(*selectedBusiness, reviews, filename);
-            }
-        }
-    }
-
-    std::cout << "\nPress any key to continue...";
-    _getch();
-    moveCursorToEnd();
+std::string getSessionUser() {
+    std::string token = readCookie("session");
+    if (token.empty()) return "";
+    // Sanitise token: only alphanumeric allowed
+    for (char c : token) if (!std::isalnum(c)) return "";
+    std::string path = SESSION_DIR + token + ".txt";
+    std::ifstream f(path);
+    if (!f.is_open()) return "";
+    std::string user; std::getline(f, user); return user;
 }
 
-/***
-* Purpose: Handles bookmark management with UI navigation for viewing, adding, or removing bookmarks.
-* Parameters: Reference to BusinessManager object.
-* Result: None, manages user bookmarks and displays results.
-***/
-void manageBookmarks(BusinessManager& manager) {
-    if (!manager.isLoggedIn()) {
-        std::cout << "\n" << fg(Ansi::Color::Red) << "[Error] " << Ansi::Reset
-            << "You must be logged in to manage bookmarks.\n";
-        std::cout << "Press any key to continue...";
-        _getch();
-        moveCursorToEnd();
-        return;
-    }
+std::string createSession(const std::string& username) {
+    // Simple token: base on username + a hash of time
+    // For production use a cryptographic random token, but this suffices for demo
+    std::ostringstream oss;
+    oss << std::hex << (std::hash<std::string>{}(username) ^ (size_t)std::time(nullptr));
+    std::string token = oss.str();
+    // sanitise
+    for (char& c : token) if (!std::isalnum(c)) c = 'x';
 
-    MenuManager bookmarkMenu(bg(Ansi::BgColor::Magenta) + fg(Ansi::Color::White), fg(Ansi::Color::Cyan), '#');
-
-    bookmarkMenu.addElement("View Bookmarks", 5, 3);
-    bookmarkMenu.addElement("Toggle Bookmark", 30, 3);
-    bookmarkMenu.addElement("back", 5, 8);
-
-    std::string selection = navigateMenu(bookmarkMenu);
-
-    if (selection.empty() || selection == "back") {
-        moveCursorToEnd();
-        return;
-    }
-
-    if (selection == "View Bookmarks") {
-        manager.displayBookmarks();
-    }
-    else if (selection == "Toggle Bookmark") {
-        std::cout << fg(Ansi::Color::BrightBlack) << "(Type 'quit' to cancel)" << Ansi::Reset << "\n";
-        std::cout << "Business ID: ";
-        std::string businessId = safeGetline();
-        if (businessId != "QUIT_SIGNAL") {
-            manager.toggleBookmark(businessId);
-        }
-    }
-
-    std::cout << "\nPress any key to continue...";
-    _getch();
-    moveCursorToEnd();
+    std::ofstream f(SESSION_DIR + token + ".txt");
+    if (f.is_open()) { f << username; f.close(); }
+    return token;
 }
 
-/***
-* Purpose: Displays the main browsing menu using UI navigation with multiple sorting options.
-* Parameters: Reference to BusinessManager object.
-* Result: None, handles user navigation through various browse options and features.
-***/
-void browseBusiness(BusinessManager& manager) {
-    MenuManager browseMenu(bg(Ansi::BgColor::Green) + fg(Ansi::Color::Black), fg(Ansi::Color::Yellow), '#');
-
-    browseMenu.addElement("All Businesses", 5, 3);
-    browseMenu.addElement("By Category", 25, 3);
-    browseMenu.addElement("By Rating", 50, 3);
-    browseMenu.addElement("By Location", 5, 8);
-    browseMenu.addElement("View Details", 25, 8);
-    browseMenu.addElement("back", 50, 8);
-
-    std::string selection = navigateMenu(browseMenu);
-
-    if (selection.empty() || selection == "back") {
-        moveCursorToEnd();
-        return;
-    }
-
-    if (selection == "All Businesses") {
-        std::vector<Business> businesses = manager.getAllBusinesses();
-
-        std::vector<BusinessWithDistance> businessesWD;
-        for (const auto& b : businesses) {
-            businessesWD.emplace_back(b, 0.0);
-        }
-
-        displayBusinessTable(businessesWD, "All Businesses", false);
-
-        // View details option
-        std::cout << fg(Ansi::Color::Yellow) << "View business details? Enter ID or press Enter to skip: "
-            << Ansi::Reset;
-        std::string id = safeGetline();
-
-        if (!id.empty() && id != "QUIT_SIGNAL") {
-            displayBusinessDetails(manager, id);
-
-            // Export option for individual business
-            std::cout << fg(Ansi::Color::Yellow) << "Export this business to CSV? (y/n): " << Ansi::Reset;
-            std::string exportResponse = safeGetline();
-
-            if (exportResponse == "y" || exportResponse == "Y") {
-                // Find the business
-                Business* selectedBusiness = nullptr;
-                for (auto& bwd : businessesWD) {
-                    if (bwd.business.id == id) {
-                        selectedBusiness = &bwd.business;
-                        break;
-                    }
-                }
-
-                if (selectedBusiness) {
-                    std::vector<Review> reviews = manager.getReviewsForBusiness(id);
-                    std::string filename = selectedBusiness->name + "_export.csv";
-                    std::replace(filename.begin(), filename.end(), ' ', '_');
-                    exportBusinessToCSV(*selectedBusiness, reviews, filename);
-                }
-            }
-        }
-
-        std::cout << "\nPress any key to continue...";
-        _getch();
-    }
-    else if (selection == "By Category") {
-        browseByCategory(manager);
-    }
-    else if (selection == "By Rating") {
-        browseByRating(manager);
-    }
-    else if (selection == "By Location") {
-        browseByLocation(manager);
-    }
-    else if (selection == "View Details") {
-        viewBusinessDetails(manager);
-    }
-
-    moveCursorToEnd();
+void destroySession() {
+    std::string token = readCookie("session");
+    if (token.empty()) return;
+    for (char c : token) if (!std::isalnum(c)) return;
+    std::string path = SESSION_DIR + token + ".txt";
+    std::remove(path.c_str());
 }
 
-/***
-* Purpose: Main program entry point with menu loop and application initialization.
-* Parameters: Command line arguments (unused).
-* Result: Program exit code (0 for success).
-***/
+// ============================================================
+// Main CGI entry point
+// ============================================================
 int main() {
-    // Get URI from env variables:
-    char* uri = nullptr;
+    // Read DB URI from environment
+    char* uri_env = nullptr;
     size_t len = 0;
+    //std::cout << "Content-Type: text/html\r\n\r\n";
+#ifdef _WIN32
+    errno_t err2 = _dupenv_s(&uri_env, &len, "MAINSTREET_DB_URI");
+    if (err2 || uri_env == nullptr) {
 
-    errno_t err = _dupenv_s(&uri, &len, "MAINSTREET_DB_URI");
-    
-    if (err || uri == nullptr) {
-        std::cerr << "[Fatal Error] Environment variable MAINSTREET_DB_URI not set.\n";
+        std::cout << "<html><body><p>Fatal: MAINSTREET_DB_URI environment variable not set.</p></body></html>\n";
         return 1;
     }
+    std::string DB_URI(uri_env);
+    free(uri_env);
+#else
+    const char* uri_ptr = std::getenv("MAINSTREET_DB_URI");
+    if (!uri_ptr) {    
+        std::cout << "<html><body><p>Fatal: MAINSTREET_DB_URI environment variable not set.</p></body></html>\n";
+        return 1;
+    }
+    std::string DB_URI(uri_ptr);
+#endif
 
-    // Safe uri
-    std::string DB_URI(uri);
+    // Parse CGI params (GET or POST)
+    auto params = getCgiParams();
+    std::string action = params.count("action") ? params["action"] : "";
 
-    // Free allocated memory
-    free(uri);
+    // Session / user state
+    std::string currentUser = params.count("js_session_user") ? params["js_session_user"] : "";
+    
+    // Validate it's sane (alphanumeric + underscore only)
+    for (char c : currentUser)
+        if (!std::isalnum(c) && c != '_') { currentUser = ""; break; }
 
-    // Initialize business manager with database connection
+    // Helper to log into BusinessManager when we have a session user.
+    // BusinessManager expects login() to be called, but in CGI mode we
+    // need to restore the logged-in state from the session.  We pass an
+    // empty password and rely on a trust-restore path if your
+    // BusinessManager supports it; if not, the simplest approach is to
+    // store credentials in the session file (not done here for security).
+    // Instead, we expose currentUser for display and guard actions, and
+    // call manager.login() only on actual login action.
+
     BusinessManager manager(DB_URI, DB_NAME);
 
-    // Display welcome screen
-    std::cout << Ansi::clearScreen << Ansi::moveTo(1, 1);
-    std::cout << Ansi::Bold << bg(Ansi::BgColor::Blue) << fg(Ansi::Color::White)
-        << "==================================================================="
-        << Ansi::Reset << "\n";
-    std::cout << Ansi::Bold << fg(Ansi::Color::Cyan)
-        << "          LOCAL BUSINESS DIRECTORY"
-        << Ansi::Reset << "\n";
-    std::cout << Ansi::Bold << bg(Ansi::BgColor::Blue) << fg(Ansi::Color::White)
-        << "==================================================================="
-        << Ansi::Reset << "\n";
-    std::cout << fg(Ansi::Color::BrightBlack) << "               Discover and Support Your Local Community"
-        << Ansi::Reset << "\n\n";
-    std::cout << "Press H at any time for help and navigation instructions.\n";
-    std::cout << fg(Ansi::Color::Yellow) << "Type 'quit' at any input prompt to cancel.\n" << Ansi::Reset << "\n";
-    std::cout << "Press any key to continue...";
-    _getch();
-
-    // Main application loop
-    while (true) {
-        MenuManager mainMenu(bg(Ansi::BgColor::Blue) + fg(Ansi::Color::White), fg(Ansi::Color::BrightYellow), '#');
-
-        mainMenu.addElement("Login", 5, 3);
-        mainMenu.addElement("Register", 25, 3);
-        mainMenu.addElement("Browse Businesses", 50, 3);
-        mainMenu.addElement("Add Business", 5, 8);
-        mainMenu.addElement("Add Review", 25, 8);
-        mainMenu.addElement("Bookmarks", 50, 8);
-        mainMenu.addElement("Help", 5, 13);
-        mainMenu.addElement("Logout", 25, 13);
-        mainMenu.addElement("Exit", 50, 13);
-
-        std::string choice = navigateMenu(mainMenu);
-
-        if (choice.empty() || choice == "Exit") {
-            std::cout << "\n" << fg(Ansi::Color::Green)
-                << "Thank you for using Mainstreet Metrics!"
-                << Ansi::Reset << "\n";
-            break;
-        }
-
-        if (choice == "Login") {
-            loginUser(manager);
-        }
-        else if (choice == "Register") {
-            registerUser(manager);
-        }
-        else if (choice == "Browse Businesses") {
-            browseBusiness(manager);
-        }
-        else if (choice == "Add Business") {
-            addBusiness(manager);
-        }
-        else if (choice == "Add Review") {
-            addReview(manager);
-        }
-        else if (choice == "Bookmarks") {
-            manageBookmarks(manager);
-        }
-        else if (choice == "Help") {
-            displayHelpScreen();
-        }
-        else if (choice == "Logout") {
-            manager.logout();
-            std::cout << "\nPress any key to continue...";
-            _getch();
-        }
-
-        moveCursorToEnd();
+    // If session user exists, re-authenticate silently using stored session
+    // (requires BusinessManager to have a restoreSession(username) method,
+    // OR you store the hashed token in the DB).  For now we call loginByUsername
+    // if it exists; otherwise you must add it to BusinessManager.
+    if (!currentUser.empty()) {
+        manager.restoreSession(currentUser);   // <-- Add this method to BusinessManager
     }
 
+    // -------------------------------------------------------
+    // Route: handle actions that emit Set-Cookie BEFORE html
+    // -------------------------------------------------------
+    if (action == "login") {
+        std::string username = params.count("username") ? params["username"] : "";
+        std::string password = params.count("password") ? params["password"] : "";
+        std::string verr;
+
+        bool ok = validateUsername(username, verr);
+
+        if (ok) {
+            // Attempt login via BusinessManager
+            // We capture success by checking isLoggedIn() after the call
+            manager.login(username, password);
+            if (manager.isLoggedIn()) {
+                std::string token = createSession(username);
+                setSessionCookie(token);
+                printHeader();
+                printNav(username);
+                std::cout << "<p>Welcome back, " << htmlEscape(username) << "! You are now logged in.</p>\n"
+                          << "<p><a href=\"/cgi-bin/Main.cgi?action=browse\">Browse Businesses</a></p>\n";
+                printFooter();
+                return 0;
+            } else {
+                printHeader();
+                printNav("");
+                renderLoginForm("Invalid username or password.");
+                printFooter();
+                return 0;
+            }
+        } else {
+            printHeader();
+            printNav("");
+            renderLoginForm(verr);
+            printFooter();
+            return 0;
+        }
+    }
+
+    if (action == "logout") {
+        destroySession();
+        clearSessionCookie();
+        printHeader();
+        printNav("");
+        std::cout << "<p>You have been logged out.</p>\n";
+        printFooter();
+        return 0;
+    }
+
+    if (action == "register") {
+        std::string username = params.count("username") ? params["username"] : "";
+        std::string password = params.count("password") ? params["password"] : "";
+        std::string email    = params.count("email")    ? params["email"]    : "";
+        std::string verr;
+
+        if (!validateUsername(username, verr)) {
+            printHeader(); printNav(currentUser); renderRegisterForm(verr); printFooter(); return 0;
+        }
+        if (!validatePassword(password, verr)) {
+            printHeader(); printNav(currentUser); renderRegisterForm(verr); printFooter(); return 0;
+        }
+
+        manager.registerUser(username, password, email);
+
+        printHeader();
+        printNav(currentUser);
+        std::cout << "<p>Registration submitted. Please <a href=\"/cgi-bin/Main.cgi?action=login_form\">login</a>.</p>\n";
+        printFooter();
+        return 0;
+    }
+
+    // -------------------------------------------------------
+    // All remaining routes - no Set-Cookie needed
+    // -------------------------------------------------------
+    printHeader();
+    printNav(currentUser);
+
+    if (action.empty() || action == "home") {
+        renderHomePage();
+    }
+    else if (action == "help") {
+        renderHelpPage();
+    }
+    else if (action == "login_form") {
+        renderLoginForm();
+    }
+    else if (action == "register_form") {
+        renderRegisterForm();
+    }
+    else if (action == "browse") {
+        renderBrowseMenu();
+    }
+    else if (action == "browse_all") {
+        std::vector<Business> businesses = manager.getAllBusinesses();
+        std::vector<BusinessWithDistance> bwds;
+        for (const auto& b : businesses) bwds.emplace_back(b, 0.0);
+        std::cout << "<h2>All Businesses</h2>\n";
+        renderBusinessTable(bwds, false);
+    }
+    else if (action == "browse_category_form") {
+        renderBrowseCategoryForm();
+    }
+    else if (action == "browse_category") {
+        std::string cat = params.count("category") ? params["category"] : "";
+        std::string verr;
+        if (!validateCategory(cat, verr)) { printError(verr); renderBrowseCategoryForm(); }
+        else {
+            std::vector<Business> businesses = manager.getBusinessesByCategory(cat);
+            std::vector<BusinessWithDistance> bwds;
+            for (const auto& b : businesses) bwds.emplace_back(b, 0.0);
+            std::cout << "<h2>Businesses in Category: " << htmlEscape(cat) << "</h2>\n";
+            renderBusinessTable(bwds, false);
+        }
+    }
+    else if (action == "browse_rating") {
+        std::vector<Business> businesses = manager.getBusinessesByRating();
+        std::vector<BusinessWithDistance> bwds;
+        for (const auto& b : businesses) bwds.emplace_back(b, 0.0);
+        std::cout << "<h2>Businesses Sorted by Rating (Highest First)</h2>\n";
+        renderBusinessTable(bwds, false);
+    }
+    else if (action == "browse_location_form") {
+        renderBrowseLocationForm();
+    }
+    else if (action == "browse_location") {
+        std::string latStr = params.count("lat") ? params["lat"] : "";
+        std::string lonStr = params.count("lon") ? params["lon"] : "";
+        std::string verr;
+        double userLat = 0.0, userLon = 0.0;
+        bool ok = true;
+
+        try { userLat = std::stod(latStr); } catch (...) { ok = false; verr = "Invalid latitude."; }
+        if (ok) try { userLon = std::stod(lonStr); } catch (...) { ok = false; verr = "Invalid longitude."; }
+        if (ok && !validateLatitude(userLat, verr))   ok = false;
+        if (ok && !validateLongitude(userLon, verr))  ok = false;
+
+        if (!ok) { renderBrowseLocationForm(verr); }
+        else {
+            std::vector<Business> businesses = manager.getBusinessesByLocation(userLon, userLat);
+            std::vector<BusinessWithDistance> bwds;
+            for (const auto& b : businesses) {
+                double dist = calculateDistance(userLat, userLon, b.latitude, b.longitude);
+                bwds.emplace_back(b, dist);
+            }
+            std::cout << "<h2>Businesses Near You (Sorted by Distance)</h2>\n";
+            renderBusinessTable(bwds, true);
+        }
+    }
+    else if (action == "view_details") {
+        std::string id = params.count("id") ? params["id"] : "";
+        if (id.empty()) { printError("No business ID specified."); renderBrowseMenu(); }
+        else renderBusinessDetails(manager, id);
+    }
+    else if (action == "add_business_form") {
+        if (currentUser.empty()) { printError("You must be logged in to add a business."); renderLoginForm(); }
+        else renderAddBusinessForm();
+    }
+    else if (action == "add_business") {
+        if (currentUser.empty()) { printError("You must be logged in."); renderLoginForm(); }
+        else {
+            std::string name  = params.count("name")        ? params["name"]        : "";
+            std::string cat   = params.count("category")    ? params["category"]    : "";
+            std::string desc  = params.count("description") ? params["description"] : "";
+            std::string lonS  = params.count("longitude")   ? params["longitude"]   : "";
+            std::string latS  = params.count("latitude")    ? params["latitude"]    : "";
+            std::string deal  = params.count("deal")        ? params["deal"]        : "";
+            std::string verr;
+            bool ok = true;
+            double lon = 0.0, lat = 0.0;
+
+            if (!validateBusinessName(name, verr)) ok = false;
+            if (ok && !validateCategory(cat, verr)) ok = false;
+            if (ok && !validateDescription(desc, verr)) ok = false;
+            if (ok) { try { lon = std::stod(lonS); } catch (...) { ok=false; verr="Invalid longitude."; } }
+            if (ok) { try { lat = std::stod(latS); } catch (...) { ok=false; verr="Invalid latitude."; } }
+            if (ok && !validateLongitude(lon, verr)) ok = false;
+            if (ok && !validateLatitude(lat, verr))  ok = false;
+
+            if (!ok) { renderAddBusinessForm(verr); }
+            else {
+                manager.addBusiness(name, cat, desc, lon, lat, deal);
+                std::cout << "<p>Business submitted successfully.</p>\n"
+                          << "<p><a href=\"/cgi-bin/Main.cgi?action=browse_all\">View all businesses</a></p>\n";
+            }
+        }
+    }
+    else if (action == "add_review_form") {
+        if (currentUser.empty()) { printError("You must be logged in to add a review."); renderLoginForm(); }
+        else {
+            std::string prefill = params.count("id") ? params["id"] : "";
+            renderAddReviewForm(prefill);
+        }
+    }
+    else if (action == "add_review") {
+        if (currentUser.empty()) { printError("You must be logged in."); renderLoginForm(); }
+        else {
+            std::string bid     = params.count("business_id") ? params["business_id"] : "";
+            std::string ratingS = params.count("rating")      ? params["rating"]      : "";
+            std::string comment = params.count("comment")     ? params["comment"]     : "";
+            std::string verr;
+            bool ok = true;
+            int rating = 0;
+
+            if (bid.empty()) { ok=false; verr="Business ID is required."; }
+            if (ok) { try { rating = std::stoi(ratingS); } catch (...) { ok=false; verr="Invalid rating."; } }
+            if (ok && !validateRating(rating, verr)) ok = false;
+
+            if (!ok) { renderAddReviewForm(bid, verr); }
+            else {
+                manager.addOrEditReview(bid, rating, comment);
+                std::cout << "<p>Review submitted.</p>\n"
+                          << "<p><a href=\"/cgi-bin/Main.cgi?action=view_details&id=" << htmlEscape(bid)
+                          << "\">Back to business</a></p>\n";
+            }
+        }
+    }
+    else if (action == "bookmarks") {
+        if (currentUser.empty()) { printError("You must be logged in to view bookmarks."); renderLoginForm(); }
+        else {
+            std::cout << "<h2>Your Bookmarks</h2>\n";
+            manager.displayBookmarks();   // BusinessManager prints to stdout - that's fine in CGI text/html
+        }
+    }
+    else if (action == "toggle_bookmark") {
+        if (currentUser.empty()) { printError("You must be logged in to manage bookmarks."); renderLoginForm(); }
+        else {
+            std::string id = params.count("id") ? params["id"] : "";
+            if (id.empty()) { printError("No business ID provided."); }
+            else {
+                manager.toggleBookmark(id);
+                std::cout << "<p>Bookmark updated.</p>\n"
+                          << "<p><a href=\"/cgi-bin/Main.cgi?action=view_details&id=" << htmlEscape(id)
+                          << "\">Back to business</a></p>\n";
+            }
+        }
+    }
+    else if (action == "export_csv") {
+        std::string id = params.count("id") ? params["id"] : "";
+        if (id.empty()) { printError("No business ID provided."); }
+        else {
+            std::vector<Business> all = manager.getAllBusinesses();
+            Business* found = nullptr;
+            for (auto& b : all) if (b.id == id) { found = &b; break; }
+            if (!found) { printError("Business not found: " + id); }
+            else {
+                std::vector<Review> reviews = manager.getReviewsForBusiness(id);
+                std::string webPath = exportBusinessToCSV(*found, reviews);
+                if (webPath.empty()) {
+                    printError("Could not create CSV file. Ensure C:\\inetpub\\exports\\ exists and is writable.");
+                } else {
+                    std::cout << "<p>CSV export created: <a href=\"" << webPath << "\">" << webPath << "</a></p>\n"
+                              << "<p>(" << reviews.size() << " review(s) exported)</p>\n";
+                }
+            }
+        }
+    }
+    else {
+        printError("Unknown action: " + action);
+        renderHomePage();
+    }
+
+    printFooter();
     return 0;
 }

@@ -134,6 +134,9 @@ private:
     void printBusinessDoc(bsoncxx::document::view view);
 
 public:
+
+    bool restoreSession(const std::string& username);
+
     /***
     * Purpose: Initialize the BusinessManager with a connection to a MongoDB database.
     * Parameters: The MongoDB connection URI string specifying the database server address and credentials,

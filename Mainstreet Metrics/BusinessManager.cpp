@@ -22,6 +22,32 @@ using bsoncxx::builder::stream::open_array;
 using bsoncxx::builder::stream::close_array;
 using bsoncxx::builder::stream::finalize;
 
+bool BusinessManager::restoreSession(const std::string& username) {
+    std::lock_guard<std::mutex> lock(db_mutex);
+
+    auto result = users_coll.find_one(document{} << "username" << username << finalize);
+
+    if (result) {
+        logged_in = true;
+        bsoncxx::document::view view = result->view();
+
+        User u;
+        u.id = view["_id"].get_oid().value.to_string();
+        u.username = view["username"].get_string().value.data();
+        u.email = view["email"].get_string().value.data();
+        u.is_verified = view["is_verified"].get_bool().value;
+
+        if (view["bookmarks"] && view["bookmarks"].type() == bsoncxx::type::k_array) {
+            for (auto ele : view["bookmarks"].get_array().value) {
+                u.bookmarks.push_back(ele.get_oid().value.to_string());
+            }
+        }
+
+        current_user = u;
+        return true;
+    }
+    return false;
+}
 
 std::string BusinessManager::hashPassword(const std::string& password) {
     std::hash<std::string> hasher;
@@ -55,7 +81,7 @@ void BusinessManager::updateBusinessAverageRating(const std::string& business_id
         }
     }
     catch (const std::exception& e) {
-        std::cerr << "Error updating average: " << e.what() << std::endl;
+        //std::cerr << "Error updating average: " << e.what() << std::endl;
     }
 }
 
@@ -98,14 +124,14 @@ std::vector<Business> BusinessManager::fetchBusinesses(bsoncxx::document::value 
         }
     }
     catch (const std::exception& e) {
-        std::cerr << "Query Error: " << e.what() << std::endl;
+        // std::cerr << "Query Error: " << e.what() << std::endl;
     }
     return results;
 }
 
 void BusinessManager::printBusinessDoc(bsoncxx::document::view view) {
     std::string name = view["name"].get_string().value.data();
-    std::cout << "ID: " << view["_id"].get_oid().value.to_string() << " | " << name << "\n";
+    // std::cout << "ID: " << view["_id"].get_oid().value.to_string() << " | " << name << "\n";
 }
 
 BusinessManager::BusinessManager(const std::string& uri_string, const std::string& db_name)
@@ -120,10 +146,10 @@ BusinessManager::BusinessManager(const std::string& uri_string, const std::strin
         reviews_coll = db["reviews"];
 
         ensureIndexes();
-        std::cout << "[System] Connected to MongoDB Atlas." << std::endl;
+        // std::cout << "[System] Connected to MongoDB Atlas." << std::endl;
     }
     catch (const std::exception& e) {
-        std::cerr << "[Fatal Error] DB Connection failed: " << e.what() << std::endl;
+        // std::cerr << "[Fatal Error] DB Connection failed: " << e.what() << std::endl;
         exit(1);
     }
 }
@@ -147,7 +173,7 @@ bool BusinessManager::performBotCheck() {
     int a = distrib(gen);
     int b = distrib(gen);
 
-    std::cout << "[Security] Verify you are human: What is " << a << " + " << b << "? ";
+    // std::cout << "[Security] Verify you are human: What is " << a << " + " << b << "? ";
     int answer;
     std::cin >> answer;
 
@@ -155,22 +181,23 @@ bool BusinessManager::performBotCheck() {
     std::cin.ignore(std::numeric_limits<std::streamsize>::max(), '\n');
 
     if (answer == (a + b)) return true;
-    std::cout << "[Security] Verification failed.\n";
+    // std::cout << "[Security] Verification failed.\n";
     return false;
 }
 
 bool BusinessManager::registerUser(const std::string& username, const std::string& password, const std::string& email) {
-    std::cout << "\n--- New User Registration ---\n";
+    // std::cout << "\n--- New User Registration ---\n";
 
     // Bot Verification (CAPTCHA)
-    if (!performBotCheck()) {
-        std::cout << "[Error] Bot verification failed. Registration aborted.\n";
+    // Verification already performed on the website through window alert.
+    /*if (!performBotCheck()) {
+        // std::cout << "[Error] Bot verification failed. Registration aborted.\n";
         return false;
-    }
+    }*/
 
     // Email Syntax Validation
     if (!isValidEmail(email)) {
-        std::cout << "[Error] Invalid email format (e.g., user@example.com).\n";
+        // std::cout << "[Error] Invalid email format (e.g., user@example.com).\n";
         return false;
     }
 
@@ -179,14 +206,14 @@ bool BusinessManager::registerUser(const std::string& username, const std::strin
     // Database Uniqueness Check (Username)
     auto user_exists = users_coll.find_one(document{} << "username" << username << finalize);
     if (user_exists) {
-        std::cout << "[Error] Username '" << username << "' is already taken.\n";
+        // std::cout << "[Error] Username '" << username << "' is already taken.\n";
         return false;
     }
 
     // Database Uniqueness Check (Email)
     auto email_exists = users_coll.find_one(document{} << "email" << email << finalize);
     if (email_exists) {
-        std::cout << "[Error] The email '" << email << "' is already registered.\n";
+        // std::cout << "[Error] The email '" << email << "' is already registered.\n";
         return false;
     }
 
@@ -202,11 +229,11 @@ bool BusinessManager::registerUser(const std::string& username, const std::strin
             << finalize;
 
         users_coll.insert_one(doc.view());
-        std::cout << "[Success] User registered successfully! You may now log in.\n";
+        // std::cout << "[Success] User registered successfully! You may now log in.\n";
         return true;
     }
     catch (const std::exception& e) {
-        std::cerr << "[System Error] Registration failed: " << e.what() << "\n";
+        // std::cerr << "[System Error] Registration failed: " << e.what() << "\n";
         return false;
     }
 }
@@ -237,11 +264,11 @@ bool BusinessManager::login(const std::string& username, const std::string& pass
         }
 
         current_user = u;
-        std::cout << "Welcome back, " << u.username << "!\n";
+        // std::cout << "Welcome back, " << u.username << "!\n";
         return true;
     }
     else {
-        std::cout << "Invalid credentials.\n";
+        // std::cout << "Invalid credentials.\n";
         return false;
     }
 }
@@ -249,7 +276,7 @@ bool BusinessManager::login(const std::string& username, const std::string& pass
 void BusinessManager::logout() {
     logged_in = false;
     current_user.reset();
-    std::cout << "Logged out.\n";
+    // std::cout << "Logged out.\n";
 }
 
 bool BusinessManager::isLoggedIn() const { return logged_in; }
@@ -257,7 +284,7 @@ bool BusinessManager::isLoggedIn() const { return logged_in; }
 void BusinessManager::addBusiness(const std::string& name, const std::string& category,
     const std::string& desc, double lon, double lat, const std::string& deal) {
     if (!logged_in || !current_user->is_verified) {
-        std::cout << "Error: You must be logged in and verified to add businesses.\n";
+        // std::cout << "Error: You must be logged in and verified to add businesses.\n";
         return;
     }
 
@@ -275,7 +302,7 @@ void BusinessManager::addBusiness(const std::string& name, const std::string& ca
         << finalize;
 
     businesses_coll.insert_one(doc.view());
-    std::cout << "Business '" << name << "' added.\n";
+    // std::cout << "Business '" << name << "' added.\n";
 }
 
 std::vector<Business> BusinessManager::getAllBusinesses() {
@@ -310,12 +337,12 @@ std::vector<Business> BusinessManager::getBusinessesByLocation(double lon, doubl
 
 void BusinessManager::addOrEditReview(const std::string& business_id, int rating, const std::string& comment) {
     if (!logged_in) {
-        std::cout << "Please login to leave a review.\n";
+        // std::cout << "Please login to leave a review.\n";
         return;
     }
 
     if (rating < 1 || rating > 5) {
-        std::cout << "Rating must be 1-5.\n";
+        // std::cout << "Rating must be 1-5.\n";
         return;
     }
 
@@ -340,11 +367,11 @@ void BusinessManager::addOrEditReview(const std::string& business_id, int rating
 
         // Trigger recalculation of the business's average
         updateBusinessAverageRating(business_id);
-        std::cout << "Review posted/updated successfully.\n";
+        // std::cout << "Review posted/updated successfully.\n";
 
     }
     catch (const std::exception& e) {
-        std::cout << "Error posting review: " << e.what() << "\n";
+        // std::cout << "Error posting review: " << e.what() << "\n";
     }
 }
 
@@ -365,7 +392,7 @@ void BusinessManager::toggleBookmark(const std::string& business_id) {
                 document{} << "_id" << uid << finalize,
                 document{} << "$pull" << open_document << "bookmarks" << bid << close_document << finalize
             );
-            std::cout << "Bookmark removed.\n";
+            // std::cout << "Bookmark removed.\n";
         }
         else {
             // Add
@@ -374,23 +401,23 @@ void BusinessManager::toggleBookmark(const std::string& business_id) {
                 document{} << "_id" << uid << finalize,
                 document{} << "$addToSet" << open_document << "bookmarks" << bid << close_document << finalize
             );
-            std::cout << "Bookmark added.\n";
+            // std::cout << "Bookmark added.\n";
         }
     }
     catch (const std::exception& e) {
-        std::cout << "Error toggling bookmark: " << e.what() << "\n";
-        std::cout << "Please ensure the Business ID is valid.\n";
+        // std::cout << "Error toggling bookmark: " << e.what() << "\n";
+        // std::cout << "Please ensure the Business ID is valid.\n";
     }
 }
 
 void BusinessManager::displayBookmarks() {
     if (!logged_in) return;
     if (current_user->bookmarks.empty()) {
-        std::cout << "No bookmarks saved.\n";
+        // std::cout << "No bookmarks saved.\n";
         return;
     }
 
-    std::cout << "--- Your Saved Businesses ---\n";
+    // std::cout << "--- Your Saved Businesses ---\n";
     for (const auto& bid : current_user->bookmarks) {
         auto doc = businesses_coll.find_one(document{} << "_id" << bsoncxx::oid(bid) << finalize);
         if (doc) {
@@ -419,7 +446,7 @@ std::vector<Review> BusinessManager::getReviewsForBusiness(const std::string& bu
         }
     }
     catch (const std::exception& e) {
-        std::cerr << "Error fetching reviews: " << e.what() << std::endl;
+        // std::cerr << "Error fetching reviews: " << e.what() << std::endl;
     }
 
     return reviews;
