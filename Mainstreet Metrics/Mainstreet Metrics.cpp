@@ -148,7 +148,7 @@ void printFooter() {
               << "</body>\n</html>\n";
 }
 
-void printNav(const std::string& currentUser) {
+void printNav(BusinessManager& manager, const std::string& currentUser) {
     std::cout << "<h1>Mainstreet Metrics &mdash; Local Business Directory</h1>\n";
     std::cout << "<nav>\n";
     if (currentUser.empty()) {
@@ -156,6 +156,7 @@ void printNav(const std::string& currentUser) {
                   << "<a href=\"/cgi-bin/Main.cgi?action=register_form\">Register</a> | ";
     } else {
         std::cout << "<strong>Logged in as: " << htmlEscape(currentUser) << "</strong> | "
+                  << (manager.isVerified() ? " Verified" : " (unverified)") << "</strong> | "
                   << "<a href=\"/cgi-bin/Main.cgi?action=logout\">Logout</a> | "
                   << "<a href=\"/cgi-bin/Main.cgi?action=bookmarks\">Bookmarks</a> | "
                   << "<a href=\"/cgi-bin/Main.cgi?action=add_business_form\">Add Business</a> | "
@@ -590,6 +591,13 @@ void destroySession() {
     std::remove(path.c_str());
 }
 
+bool validateObjectId(const std::string& id, std::string& err) {
+    if (id.length() != 24) { err = "Invalid business ID length."; return false; }
+    for (char c : id)
+        if (!std::isxdigit(c)) { err = "Invalid business ID format."; return false; }
+    return true;
+}
+
 // ============================================================
 // Main CGI entry point
 // ============================================================
@@ -597,7 +605,7 @@ int main() {
     // Read DB URI from environment
     char* uri_env = nullptr;
     size_t len = 0;
-    //std::cout << "Content-Type: text/html\r\n\r\n";
+    std::cout << "Content-Type: text/html\r\n\r\n";
 #ifdef _WIN32
     errno_t err2 = _dupenv_s(&uri_env, &len, "MAINSTREET_DB_URI");
     if (err2 || uri_env == nullptr) {
@@ -664,21 +672,21 @@ int main() {
                 std::string token = createSession(username);
                 setSessionCookie(token);
                 printHeader();
-                printNav(username);
+                printNav(manager, username);
                 std::cout << "<p>Welcome back, " << htmlEscape(username) << "! You are now logged in.</p>\n"
                           << "<p><a href=\"/cgi-bin/Main.cgi?action=browse\">Browse Businesses</a></p>\n";
                 printFooter();
                 return 0;
             } else {
                 printHeader();
-                printNav("");
+                printNav(manager, "");
                 renderLoginForm("Invalid username or password.");
                 printFooter();
                 return 0;
             }
         } else {
             printHeader();
-            printNav("");
+            printNav(manager, "");
             renderLoginForm(verr);
             printFooter();
             return 0;
@@ -689,7 +697,7 @@ int main() {
         destroySession();
         clearSessionCookie();
         printHeader();
-        printNav("");
+        printNav(manager, "");
         std::cout << "<p>You have been logged out.</p>\n";
         printFooter();
         return 0;
@@ -702,16 +710,16 @@ int main() {
         std::string verr;
 
         if (!validateUsername(username, verr)) {
-            printHeader(); printNav(currentUser); renderRegisterForm(verr); printFooter(); return 0;
+            printHeader(); printNav(manager, currentUser); renderRegisterForm(verr); printFooter(); return 0;
         }
         if (!validatePassword(password, verr)) {
-            printHeader(); printNav(currentUser); renderRegisterForm(verr); printFooter(); return 0;
+            printHeader(); printNav(manager, currentUser); renderRegisterForm(verr); printFooter(); return 0;
         }
 
         manager.registerUser(username, password, email);
 
         printHeader();
-        printNav(currentUser);
+        printNav(manager, currentUser);
         std::cout << "<p>Registration submitted. Please <a href=\"/cgi-bin/Main.cgi?action=login_form\">login</a>.</p>\n";
         printFooter();
         return 0;
@@ -720,8 +728,9 @@ int main() {
     // -------------------------------------------------------
     // All remaining routes - no Set-Cookie needed
     // -------------------------------------------------------
+
     printHeader();
-    printNav(currentUser);
+    printNav(manager, currentUser);
 
     if (action.empty() || action == "home") {
         renderHomePage();
@@ -801,10 +810,12 @@ int main() {
     }
     else if (action == "add_business_form") {
         if (currentUser.empty()) { printError("You must be logged in to add a business."); renderLoginForm(); }
+        else if (!manager.isVerified()) printError("Your account must be verified to add a review. Please contact an administrator.");
         else renderAddBusinessForm();
     }
     else if (action == "add_business") {
         if (currentUser.empty()) { printError("You must be logged in."); renderLoginForm(); }
+        else if (!manager.isVerified()) printError("Your account must be verified to add a business. Please contact an administrator.");
         else {
             std::string name  = params.count("name")        ? params["name"]        : "";
             std::string cat   = params.count("category")    ? params["category"]    : "";
@@ -834,6 +845,7 @@ int main() {
     }
     else if (action == "add_review_form") {
         if (currentUser.empty()) { printError("You must be logged in to add a review."); renderLoginForm(); }
+        else if (!manager.isVerified()) printError("Your account must be verified to add a review. Please contact an administrator.");
         else {
             std::string prefill = params.count("id") ? params["id"] : "";
             renderAddReviewForm(prefill);
@@ -841,6 +853,7 @@ int main() {
     }
     else if (action == "add_review") {
         if (currentUser.empty()) { printError("You must be logged in."); renderLoginForm(); }
+        else if (!manager.isVerified()) printError("Your account must be verified to add a review. Please contact an administrator.");
         else {
             std::string bid     = params.count("business_id") ? params["business_id"] : "";
             std::string ratingS = params.count("rating")      ? params["rating"]      : "";
@@ -854,6 +867,7 @@ int main() {
             if (ok && !validateRating(rating, verr)) ok = false;
 
             if (!ok) { renderAddReviewForm(bid, verr); }
+            else if (!validateObjectId(bid, verr)) { printError(verr); }
             else {
                 manager.addOrEditReview(bid, rating, comment);
                 std::cout << "<p>Review submitted.</p>\n"
@@ -873,7 +887,9 @@ int main() {
         if (currentUser.empty()) { printError("You must be logged in to manage bookmarks."); renderLoginForm(); }
         else {
             std::string id = params.count("id") ? params["id"] : "";
+            std::string verr;
             if (id.empty()) { printError("No business ID provided."); }
+            else if (!validateObjectId(id, verr)) { printError(verr); }
             else {
                 manager.toggleBookmark(id);
                 std::cout << "<p>Bookmark updated.</p>\n"

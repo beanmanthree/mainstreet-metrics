@@ -131,7 +131,8 @@ std::vector<Business> BusinessManager::fetchBusinesses(bsoncxx::document::value 
 
 void BusinessManager::printBusinessDoc(bsoncxx::document::view view) {
     std::string name = view["name"].get_string().value.data();
-    // std::cout << "ID: " << view["_id"].get_oid().value.to_string() << " | " << name << "\n";
+    std::string id = view["_id"].get_oid().value.to_string();
+    std::cout << "<p><a href=\"/cgi-bin/Main.cgi?action=view_details&id=" << id << "\">" << name << "</a></p>\n";
 }
 
 BusinessManager::BusinessManager(const std::string& uri_string, const std::string& db_name)
