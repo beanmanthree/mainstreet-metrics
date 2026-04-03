@@ -13,7 +13,7 @@ The application includes features such as:
 # Application Architecture:
 It follows a layered architecture:
 
-UI Layer (Menus, Tables, ANSI)
+Website UI Layer
 Application Logic (Validation, Distance, Sorting, Export)
 BusinessManager API (Users, Businesses, Reviews, Bookmarks)
 MongoDB Backend
@@ -21,3 +21,4 @@ MongoDB Backend
 #Libraries used:
 Open Source C++ standard library.
 User-defined headers.
+MongoDB API
