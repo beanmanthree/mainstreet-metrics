@@ -292,6 +292,8 @@ public:
     std::vector<Review> getReviewsForBusiness(const std::string& business_id);
 
     bool isVerified() const {
-        return logged_in && current_user.has_value() && current_user->is_verified;
+        return logged_in && current_user && current_user.has_value() && current_user->is_verified;
     }
+
+    bool verifyAccount(const std::string& email);
 };

@@ -149,15 +149,16 @@ void printFooter() {
 }
 
 void printNav(BusinessManager& manager, const std::string& currentUser) {
-    std::cout << "<h1>Mainstreet Metrics &mdash; Local Business Directory</h1>\n";
-    std::cout << "<nav>\n";
+    std::cout << "<h1>Mainstreet Metrics - Local Business Directory</h1>\n";
+    std::cout << "<nav>\n"; // nav
     if (currentUser.empty()) {
         std::cout << "<a href=\"/cgi-bin/Main.cgi?action=login_form\">Login</a> | "
                   << "<a href=\"/cgi-bin/Main.cgi?action=register_form\">Register</a> | ";
     } else {
         std::cout << "<strong>Logged in as: " << htmlEscape(currentUser) << "</strong> | "
-                  << (manager.isVerified() ? " Verified" : " (unverified)") << "</strong> | "
+                  << "<strong>" << (manager.isVerified() ? " Verified" : " (unverified)") << "</strong> | "
                   << "<a href=\"/cgi-bin/Main.cgi?action=logout\">Logout</a> | "
+                  << (!manager.isVerified() ? "<a href=\"/cgi-bin/Main.cgi?action=verify_form\">Verify Account</a> | " : "")
                   << "<a href=\"/cgi-bin/Main.cgi?action=bookmarks\">Bookmarks</a> | "
                   << "<a href=\"/cgi-bin/Main.cgi?action=add_business_form\">Add Business</a> | "
                   << "<a href=\"/cgi-bin/Main.cgi?action=add_review_form\">Add Review</a> | ";
@@ -397,11 +398,42 @@ void renderBusinessDetails(BusinessManager& manager, const std::string& id) {
 
     // Export CSV form
     std::cout << "<h3>Export</h3>\n"
-              << "<form method=\"post\" action=\"/cgi-bin/Main.cgi\">\n"
-              << "<input type=\"hidden\" name=\"action\" value=\"export_csv\">\n"
-              << "<input type=\"hidden\" name=\"id\" value=\"" << htmlEscape(id) << "\">\n"
-              << "<button type=\"submit\">Export this business to CSV</button>\n"
-              << "</form>\n";
+        << "<button onclick=\"exportCSV()\">Export this business to CSV</button>\n"
+        << "<script>\n"
+        << "function exportCSV() {\n"
+        << "  var rows = [\n"
+        << "    ['Business ID','Name','Category','Description','Avg Rating','Special Deal','Latitude','Longitude']";
+
+    if (reviews.empty()) {
+        std::cout << ",\n    ['" << found->id << "','" << found->name << "','" << found->category << "','"
+            << found->description << "','" << found->avg_rating << "','"
+            << (found->special_deal.empty() ? "None" : found->special_deal) << "','"
+            << found->latitude << "','" << found->longitude << "']";
+    }
+    else {
+        for (const auto& r : reviews) {
+            std::cout << ",\n    ['" << found->id << "','" << found->name << "','" << found->category << "','"
+                << found->description << "','" << found->avg_rating << "','"
+                << (found->special_deal.empty() ? "None" : found->special_deal) << "','"
+                << found->latitude << "','" << found->longitude << "','"
+                << r.user_id << "','" << r.rating << "','" << r.comment << "']";
+        }
+    }
+
+    std::cout << "\n  ];\n"
+        << "  var csv = rows.map(function(r){\n"
+        << "    return r.map(function(f){\n"
+        << "      var s = String(f).replace(/\"/g,'\"\"');\n"
+        << "      return /[,\\n\"]/.test(s) ? '\"'+s+'\"' : s;\n"
+        << "    }).join(',');\n"
+        << "  }).join('\\n');\n"
+        << "  var blob = new Blob([csv], {type:'text/csv'});\n"
+        << "  var a = document.createElement('a');\n"
+        << "  a.href = URL.createObjectURL(blob);\n"
+        << "  a.download = '" << found->name << "_export.csv';\n"
+        << "  a.click();\n"
+        << "}\n"
+        << "</script>\n";
 
     // Bookmark form
     std::cout << "<h3>Bookmark</h3>\n"
@@ -489,6 +521,18 @@ void renderAddReviewForm(const std::string& prefillId = "", const std::string& e
               << "<textarea name=\"comment\" rows=\"4\" cols=\"60\"></textarea></label><br><br>\n"
               << "<button type=\"submit\">Submit Review</button>\n"
               << "</form>\n";
+}
+
+void renderVerifyForm(const std::string& errMsg = "") {
+    std::cout << "<h2>Verify Account</h2>\n"
+        << "<p>To verify your account, re-enter the email address you registered with.</p>\n";
+    if (!errMsg.empty()) printError(errMsg);
+    std::cout << "<form method=\"post\" action=\"/cgi-bin/Main.cgi\">\n"
+        << "<input type=\"hidden\" name=\"action\" value=\"verify_account\">\n"
+        << "<label>Email Address:<br>"
+        << "<input type=\"email\" name=\"email\" required></label><br><br>\n"
+        << "<button type=\"submit\">Verify Account</button>\n"
+        << "</form>\n";
 }
 
 void renderBrowseMenu() {
@@ -898,7 +942,33 @@ int main() {
             }
         }
     }
-    else if (action == "export_csv") {
+    else if (action == "verify_form") {
+        if (currentUser.empty()) { printError("You must be logged in to verify your account."); renderLoginForm(); }
+        else if (manager.isVerified()) { std::cout << "<p>Your account is already verified.</p>\n"; }
+        else renderVerifyForm();
+    }
+    else if (action == "verify_account") {
+        if (currentUser.empty()) { printError("You must be logged in."); renderLoginForm(); }
+        else if (manager.isVerified()) { std::cout << "<p>Your account is already verified.</p>\n"; }
+        else {
+            std::string email = params.count("email") ? params["email"] : "";
+            if (email.empty()) {
+                renderVerifyForm("Email is required.");
+            }
+            else {
+                bool success = manager.verifyAccount(email);
+                if (success) {
+                    std::cout << "<p><strong>Account verified successfully!</strong> "
+                        << "You can now add businesses and reviews.</p>\n";
+                }
+                else {
+                    renderVerifyForm("Email does not match our records. Please try again.");
+                }
+            }
+        }
+    }
+    // Reimplemented in js in the add reviews form.
+    /*else if (action == "export_csv") {
         std::string id = params.count("id") ? params["id"] : "";
         if (id.empty()) { printError("No business ID provided."); }
         else {
@@ -917,7 +987,7 @@ int main() {
                 }
             }
         }
-    }
+    }*/
     else {
         printError("Unknown action: " + action);
         renderHomePage();

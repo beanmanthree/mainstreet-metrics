@@ -452,3 +452,34 @@ std::vector<Review> BusinessManager::getReviewsForBusiness(const std::string& bu
 
     return reviews;
 }
+
+bool BusinessManager::verifyAccount(const std::string& email) {
+    if (!logged_in || !current_user) return false;
+
+    std::lock_guard<std::mutex> lock(db_mutex);
+
+    // Look up the user by ID and check if the email matches
+    auto result = users_coll.find_one(
+        document{} << "_id" << bsoncxx::oid(current_user->id)
+        << "email" << email
+        << finalize
+    );
+
+    if (!result) return false;
+
+    try {
+        using bsoncxx::builder::basic::make_document;
+        using bsoncxx::builder::basic::kvp;
+
+        users_coll.update_one(
+            make_document(kvp("_id", bsoncxx::oid(current_user->id))),
+            make_document(kvp("$set", make_document(kvp("is_verified", true))))
+        );
+
+        current_user->is_verified = true;
+        return true;
+    }
+    catch (const std::exception&) {
+        return false;
+    }
+}
